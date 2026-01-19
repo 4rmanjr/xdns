@@ -154,6 +154,32 @@ function lock_file() {
     fi
 }
 
+function send_notification() {
+    local TITLE="$1"
+    local MESSAGE="$2"
+    
+    # Only send if run via sudo and notify-send exists
+    if [ -n "$SUDO_USER" ] && command -v notify-send &> /dev/null; then
+        local USER_ID=$(id -u "$SUDO_USER")
+        # Modern Linux (systemd) puts the bus at /run/user/<uid>/bus
+        local BUS_ADDR="unix:path=/run/user/$USER_ID/bus"
+        
+        # Fallback for older systems or custom setups might be needed, 
+        # but this covers 99% of Fedora/Ubuntu/Arch usage.
+        
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="$BUS_ADDR" \
+        notify-send -a "xdns" -u normal -i network-wired "$TITLE" "$MESSAGE" 2>/dev/null
+    fi
+}
+
+function reload_network_manager() {
+    # Tell NetworkManager to reload so it notices the change (if not locked)
+    # or at least stops complaining in logs.
+    if command -v nmcli &> /dev/null; then
+        nmcli general reload conf 2>/dev/null
+    fi
+}
+
 function flush_dns_cache() {
     local FLUSHED=false
     # Silent attempts
@@ -194,6 +220,8 @@ function restore_dns() {
     fi
     
     flush_dns_cache
+    reload_network_manager
+    send_notification "DNS Restored" "System configuration has been restored."
     echo -e "${GREEN}[✓] Restore selesai. Sistem kembali seperti semula.${NC}"
     read -p "Tekan Enter untuk kembali..."
 }
@@ -265,8 +293,15 @@ function apply_dns() {
     # Move with force to overwrite/break symlink safely
     mv -f "$TMP_CONF" "$RESOLV_CONF"
 
+    # Fix SELinux Context (Fedora/RHEL/CentOS)
+    if command -v restorecon &> /dev/null; then
+        restorecon "$RESOLV_CONF"
+    fi
+
     echo -e "${GREEN}[✓] DNS Aktif!${NC}"
     flush_dns_cache
+    reload_network_manager
+    send_notification "DNS Changed" "Provider: $NAME\nPrimary: $PRIMARY"
 
     echo ""
     echo -e "${CYAN}Kunci DNS ini (Immutable)?${NC}"
