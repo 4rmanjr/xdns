@@ -3,7 +3,7 @@
 ![Bash](https://img.shields.io/badge/Language-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
-![Version](https://img.shields.io/badge/Version-3.0.0%20Hardened-red?style=flat-square)
+![Version](https://img.shields.io/badge/Version-3.1.0%20Production-green?style=flat-square)
 
 **xdns** is a robust, interactive, and safety-focused command-line tool for managing DNS configurations on Linux systems. It is designed to replace manual editing of `/etc/resolv.conf` with a secure, atomic, and feature-rich workflow.
 
@@ -26,6 +26,8 @@ Unlike basic scripts, **xdns** treats system stability as a priority. It feature
     *   **Symlink Awareness:** Correctly handles modern distros (Ubuntu/Fedora) where `/etc/resolv.conf` is a symlink to `systemd-resolved`. It restores the link, not just the content.
 *   **🧹 Auto-Flush Cache**
     *   Automatically detects and flushes DNS cache for `systemd-resolve`, `resolvectl`, `nscd`, and `dnsmasq`.
+*   **🖥️ CLI & Interactive Mode**
+    *   Full command-line support for scripting and automation, plus interactive menu for manual use.
 
 ## 📦 Installation
 
@@ -48,10 +50,38 @@ cd .. && rm -rf xdns
 
 ## 🎮 Usage
 
-Run the tool with root privileges:
+### Interactive Mode
+
+Run the tool with root privileges for interactive menu:
 
 ```bash
 sudo xdns
+```
+
+### Command-Line Options
+
+```bash
+# Show help
+sudo xdns --help
+
+# Show version
+sudo xdns --version
+
+# List available DNS providers
+sudo xdns --list
+
+# Set DNS provider by number (1-7)
+sudo xdns -s 2              # Set Cloudflare
+sudo xdns -s 1 --lock       # Set Google DNS and lock
+
+# Set custom DNS
+sudo xdns --custom
+
+# Run speed test
+sudo xdns --test
+
+# Restore original configuration
+sudo xdns --restore
 ```
 
 ### Interactive Menu
@@ -86,6 +116,16 @@ sudo xdns
 
 It intelligently handles the differences in how these systems manage DNS caching and file attributes.
 
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error |
+| 2 | Not running as root |
+| 3 | Missing dependencies |
+| 4 | Network error |
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please ensure any Pull Request maintains the strict safety standards (e.g., no writing to system files without verification).
@@ -93,3 +133,4 @@ Contributions are welcome! Please ensure any Pull Request maintains the strict s
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for more information.
+

@@ -1,26 +1,37 @@
 #!/bin/bash
-
 # ==============================================================================
-# xdns - Advanced Linux DNS Changer (v3.0 Hardened)
+# xdns - Advanced Linux DNS Changer (v3.1.0 Production)
 # Informatif, Interaktif, Aman, dan Atomic.
 # ==============================================================================
 
+# --- Strict Mode (partial - without -e for interactive) ---
+set -uo pipefail
+
+# --- Exit Codes ---
+readonly EXIT_SUCCESS=0
+readonly EXIT_ERROR=1
+readonly EXIT_NOT_ROOT=2
+readonly EXIT_MISSING_DEPS=3
+readonly EXIT_NETWORK_ERROR=4
+
 # --- Configuration & Constants ---
-RESOLV_CONF="/etc/resolv.conf"
-BACKUP_DIR="/var/backups/xdns"
-BACKUP_CONTENT="$BACKUP_DIR/resolv.conf.orig"
-BACKUP_LINK_TARGET="$BACKUP_DIR/resolv.conf.link_path"
-TMP_SORT="/tmp/xdns_latency_test"
-VERSION="3.0.0"
+readonly RESOLV_CONF="/etc/resolv.conf"
+readonly BACKUP_DIR="/var/backups/xdns"
+readonly BACKUP_CONTENT="$BACKUP_DIR/resolv.conf.orig"
+readonly BACKUP_LINK_TARGET="$BACKUP_DIR/resolv.conf.link_path"
+readonly VERSION="3.1.0"
+
+# Runtime variables
+TMP_SORT=""  # Will be set securely via mktemp
 
 # --- Colors ---
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly BOLD='\033[1m'
+readonly NC='\033[0m'
 
 # --- DNS Providers ---
 declare -A DNS_NAMES
@@ -47,42 +58,175 @@ DNS_IPS[6]="208.67.222.222 208.67.220.220"
 DNS_NAMES[7]="Verisign (Stability)"
 DNS_IPS[7]="64.6.64.6 64.6.65.6"
 
-# --- Safety & Traps ---
+# ==============================================================================
+# LOGGING FUNCTIONS
+# ==============================================================================
+
+log_info() {
+    echo -e "${YELLOW}[i]${NC} $*"
+}
+
+log_ok() {
+    echo -e "${GREEN}[✓]${NC} $*"
+}
+
+log_error() {
+    echo -e "${RED}[!]${NC} $*" >&2
+}
+
+log_warn() {
+    echo -e "${YELLOW}[!]${NC} $*"
+}
+
+log_step() {
+    echo -e "${YELLOW}[*]${NC} $*"
+}
+
+# ==============================================================================
+# SAFETY & TRAPS
+# ==============================================================================
 
 # Cleanup on exit or interrupt
 cleanup() {
-    rm -f "$TMP_SORT"
+    [[ -n "${TMP_SORT:-}" && -f "${TMP_SORT:-}" ]] && rm -f "$TMP_SORT"
 }
-trap "cleanup; echo -e '\n${YELLOW}[!] Script dihentikan.${NC}'; exit 0" SIGINT SIGTERM
 
-function check_root() {
+# Safe exit handler - ensure we don't leave partial state
+safe_exit() {
+    local exit_code=$?
+    cleanup
+    if [[ $exit_code -ne 0 ]]; then
+        echo -e "\n${YELLOW}[!] Script dihentikan.${NC}"
+    fi
+    exit $exit_code
+}
+trap safe_exit EXIT
+trap 'exit 130' SIGINT SIGTERM
+
+# ==============================================================================
+# VALIDATION FUNCTIONS
+# ==============================================================================
+
+check_root() {
     if [[ $EUID -ne 0 ]]; then
-       echo -e "${RED}[!] Error: Akses Root diperlukan.${NC}" 
-       echo "    Jalankan: sudo xdns"
-       exit 1
+        log_error "Akses Root diperlukan."
+        echo "    Jalankan: sudo xdns"
+        exit $EXIT_NOT_ROOT
     fi
 }
 
-function check_dependencies() {
-    local REQUIRED=("bc" "ping" "chattr" "lsattr" "readlink")
-    local MISSING=()
+check_dependencies() {
+    local required=("bc" "ping" "chattr" "lsattr" "readlink" "mktemp")
+    local missing=()
     
-    for cmd in "${REQUIRED[@]}"; do
+    for cmd in "${required[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
-            MISSING+=("$cmd")
+            missing+=("$cmd")
         fi
     done
 
-    if [ ${#MISSING[@]} -ne 0 ]; then
-        echo -e "${RED}[!] Dependency Kurang:${NC} ${MISSING[*]}"
-        echo -e "${YELLOW}[i] Silakan install paket tersebut via package manager Anda.${NC}"
-        exit 1
+    if [[ ${#missing[@]} -ne 0 ]]; then
+        log_error "Dependency Kurang: ${missing[*]}"
+        log_info "Silakan install paket tersebut via package manager Anda."
+        exit $EXIT_MISSING_DEPS
     fi
 }
 
-# --- Core Logic ---
+# Validate IPv4 address - returns 0 if valid, 1 if invalid
+validate_ipv4() {
+    local ip="$1"
+    local IFS='.'
+    local -a octets
+    
+    # Must match basic IPv4 pattern first
+    if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        return 1
+    fi
+    
+    read -ra octets <<< "$ip"
+    
+    # Must have exactly 4 octets
+    [[ ${#octets[@]} -ne 4 ]] && return 1
+    
+    # Each octet must be 0-255
+    for octet in "${octets[@]}"; do
+        # Remove leading zeros for comparison (10# forces base-10)
+        octet=$((10#$octet))
+        if (( octet < 0 || octet > 255 )); then
+            return 1
+        fi
+    done
+    
+    return 0
+}
 
-function header() {
+# ==============================================================================
+# HELP & VERSION
+# ==============================================================================
+
+show_help() {
+    cat << EOF
+${BOLD}xdns${NC} v${VERSION} - Advanced Linux DNS Manager
+
+${BOLD}USAGE:${NC}
+    sudo xdns [OPTIONS]
+
+${BOLD}OPTIONS:${NC}
+    -h, --help      Show this help message
+    -v, --version   Show version information
+    -l, --list      List available DNS providers
+    -s, --set N     Set DNS provider by number (1-7)
+    -c, --custom    Set custom DNS (interactive)
+    -r, --restore   Restore original DNS configuration
+    -t, --test      Run DNS latency benchmark
+
+${BOLD}EXAMPLES:${NC}
+    sudo xdns              # Interactive mode
+    sudo xdns -s 2         # Set Cloudflare DNS
+    sudo xdns -s 1 --lock  # Set Google DNS and lock
+    sudo xdns -r           # Restore original
+    sudo xdns -t           # Run speed test
+
+${BOLD}DNS PROVIDERS:${NC}
+    1. Google DNS          8.8.8.8, 8.8.4.4
+    2. Cloudflare          1.1.1.1, 1.0.0.1
+    3. Cloudflare Secure   1.1.1.2, 1.0.0.2
+    4. Quad9               9.9.9.9, 149.112.112.112
+    5. AdGuard             94.140.14.14, 94.140.15.15
+    6. OpenDNS             208.67.222.222, 208.67.220.220
+    7. Verisign            64.6.64.6, 64.6.65.6
+
+${BOLD}NOTES:${NC}
+    - Use --restore before connecting to captive portals (hotel/cafe WiFi)
+    - VPN users with split DNS should avoid locking DNS
+
+${BOLD}MORE INFO:${NC}
+    https://github.com/4rmanjr/xdns
+
+EOF
+}
+
+show_version() {
+    echo "xdns version ${VERSION}"
+    echo "Advanced Linux DNS Manager"
+    echo "License: MIT"
+}
+
+list_providers() {
+    echo -e "${BOLD}Available DNS Providers:${NC}"
+    echo ""
+    for i in $(echo "${!DNS_NAMES[@]}" | tr ' ' '\n' | sort -n); do
+        local ips="${DNS_IPS[$i]}"
+        printf "  %s. %-25s %s\n" "$i" "${DNS_NAMES[$i]}" "$ips"
+    done
+    echo ""
+}
+
+# ==============================================================================
+# CORE LOGIC
+# ==============================================================================
+
+show_header() {
     clear
     echo -e "${CYAN}${BOLD}"
     echo "█   █  ████   █   █   ████"
@@ -98,45 +242,51 @@ function header() {
     echo -e "----------------------------------------"
 }
 
-function get_current_dns() {
-    echo -e "${YELLOW}[i] DNS Saat Ini:${NC}"
-    if [ -f "$RESOLV_CONF" ]; then
-        if [ -L "$RESOLV_CONF" ]; then
-             local TARGET=$(readlink -f "$RESOLV_CONF")
-             echo -e "    ${CYAN}(Symlink ke: $TARGET)${NC}"
+get_current_dns() {
+    log_info "DNS Saat Ini:"
+    if [[ -f "$RESOLV_CONF" ]]; then
+        if [[ -L "$RESOLV_CONF" ]]; then
+            local target
+            target=$(readlink -f "$RESOLV_CONF")
+            echo -e "    ${CYAN}(Symlink ke: $target)${NC}"
         fi
         
         grep "nameserver" "$RESOLV_CONF" 2>/dev/null | head -n 3 | awk '{print "    ➜ " $2}'
         
         if lsattr "$RESOLV_CONF" 2>/dev/null | grep -q "i"; then
-             echo -e "${RED}    (LOCKED / IMMUTABLE)${NC}"
+            echo -e "${RED}    (LOCKED / IMMUTABLE)${NC}"
         fi
     else
-        echo -e "${RED}    Tidak dapat membaca $RESOLV_CONF${NC}"
+        log_error "Tidak dapat membaca $RESOLV_CONF"
     fi
     echo ""
 }
 
-function init_backup() {
+init_backup() {
     # HANYA Backup jika belum pernah dibackup sebelumnya (Golden Image)
-    if [ ! -d "$BACKUP_DIR" ]; then
-        mkdir -p "$BACKUP_DIR"
+    if [[ ! -d "$BACKUP_DIR" ]]; then
+        if ! mkdir -p "$BACKUP_DIR"; then
+            log_error "Gagal membuat direktori backup: $BACKUP_DIR"
+            return 1
+        fi
     fi
 
-    if [ ! -f "$BACKUP_CONTENT" ]; then
-        echo -e "${YELLOW}[i] Membuat backup original sistem...${NC}"
+    if [[ ! -f "$BACKUP_CONTENT" ]]; then
+        log_info "Membuat backup original sistem..."
         
-        # 1. Simpan Konten (jaga-jaga)
-        cp -L "$RESOLV_CONF" "$BACKUP_CONTENT"
+        # 1. Simpan Konten
+        if ! cp -L "$RESOLV_CONF" "$BACKUP_CONTENT" 2>/dev/null; then
+            log_warn "Tidak dapat backup isi file (mungkin tidak ada)"
+        fi
         
         # 2. Simpan Target Symlink (jika ada)
-        if [ -L "$RESOLV_CONF" ]; then
+        if [[ -L "$RESOLV_CONF" ]]; then
             readlink "$RESOLV_CONF" > "$BACKUP_LINK_TARGET"
         fi
     fi
 }
 
-function unlock_file() {
+unlock_file() {
     # Check support for chattr first to avoid error noise on some filesystems
     if lsattr "$RESOLV_CONF" &>/dev/null; then
         if lsattr "$RESOLV_CONF" 2>/dev/null | grep -q "i"; then
@@ -145,223 +295,399 @@ function unlock_file() {
     fi
 }
 
-function lock_file() {
+lock_file() {
     chattr +i "$RESOLV_CONF" > /dev/null 2>&1
     if lsattr "$RESOLV_CONF" 2>/dev/null | grep -q "i"; then
-        echo -e "${GREEN}[✓] File DNS dikunci (Immutable).${NC}"
+        log_ok "File DNS dikunci (Immutable)."
     else
-        echo -e "${RED}[!] Gagal mengunci file (Filesystem tidak mendukung chattr?)${NC}"
+        log_error "Gagal mengunci file (Filesystem tidak mendukung chattr?)"
     fi
 }
 
-function send_notification() {
-    local TITLE="$1"
-    local MESSAGE="$2"
+send_notification() {
+    local title="$1"
+    local message="$2"
     
     # Only send if run via sudo and notify-send exists
-    if [ -n "$SUDO_USER" ] && command -v notify-send &> /dev/null; then
-        local USER_ID=$(id -u "$SUDO_USER")
+    if [[ -n "${SUDO_USER:-}" ]] && command -v notify-send &> /dev/null; then
+        local user_id
+        user_id=$(id -u "$SUDO_USER")
         # Modern Linux (systemd) puts the bus at /run/user/<uid>/bus
-        local BUS_ADDR="unix:path=/run/user/$USER_ID/bus"
+        local bus_addr="unix:path=/run/user/$user_id/bus"
         
-        # Fallback for older systems or custom setups might be needed, 
-        # but this covers 99% of Fedora/Ubuntu/Arch usage.
-        
-        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="$BUS_ADDR" \
-        notify-send -a "xdns" -u normal -i network-wired "$TITLE" "$MESSAGE" 2>/dev/null
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            notify-send -a "xdns" -u normal -i network-wired "$title" "$message" 2>/dev/null || true
     fi
 }
 
-function reload_network_manager() {
-    # Tell NetworkManager to reload so it notices the change (if not locked)
-    # or at least stops complaining in logs.
+reload_network_manager() {
+    # Tell NetworkManager to reload so it notices the change
     if command -v nmcli &> /dev/null; then
-        nmcli general reload conf 2>/dev/null
+        nmcli general reload conf 2>/dev/null || true
     fi
 }
 
-function flush_dns_cache() {
-    local FLUSHED=false
-    # Silent attempts
+flush_dns_cache() {
+    local flushed=false
+    
+    # Silent attempts - try all known methods
     if command -v resolvectl &> /dev/null; then
-        resolvectl flush-caches >/dev/null 2>&1 && FLUSHED=true
+        resolvectl flush-caches >/dev/null 2>&1 && flushed=true
     elif command -v systemd-resolve &> /dev/null; then
-        systemd-resolve --flush-caches >/dev/null 2>&1 && FLUSHED=true
+        systemd-resolve --flush-caches >/dev/null 2>&1 && flushed=true
     fi
+    
     if command -v nscd &> /dev/null; then
-        nscd -i hosts >/dev/null 2>&1 && FLUSHED=true
+        nscd -i hosts >/dev/null 2>&1 && flushed=true
     fi
-    if pgrep dnsmasq > /dev/null; then
-        killall -HUP dnsmasq >/dev/null 2>&1 && FLUSHED=true
+    
+    if pgrep dnsmasq > /dev/null 2>&1; then
+        killall -HUP dnsmasq >/dev/null 2>&1 && flushed=true
     fi
 
-    if [ "$FLUSHED" = true ]; then
-        echo -e "${GREEN}[✓] Cache DNS dibersihkan.${NC}"
+    if [[ "$flushed" == true ]]; then
+        log_ok "Cache DNS dibersihkan."
     fi
 }
 
-function restore_dns() {
-    echo -e "${YELLOW}[*] Memulihkan konfigurasi original...${NC}"
+restore_dns() {
+    log_step "Memulihkan konfigurasi original..."
     unlock_file
     
-    if [ -f "$BACKUP_LINK_TARGET" ]; then
-        # Restore as Symlink
-        local TARGET=$(cat "$BACKUP_LINK_TARGET")
-        echo -e "${CYAN}[i] Mengembalikan symlink ke $TARGET...${NC}"
-        ln -sf "$TARGET" "$RESOLV_CONF"
-    elif [ -f "$BACKUP_CONTENT" ]; then
+    if [[ -f "$BACKUP_LINK_TARGET" ]]; then
+        # Restore as Symlink - validate target first
+        local target
+        target=$(head -n1 "$BACKUP_LINK_TARGET" 2>/dev/null | tr -d '[:space:]')
+        
+        # Validate symlink target is a reasonable path
+        if [[ -z "$target" || ! "$target" =~ ^/[a-zA-Z0-9/_.-]+$ ]]; then
+            log_error "Backup symlink target tidak valid atau corrupt!"
+            read -rp "Tekan Enter..." 
+            return 1
+        fi
+        
+        echo -e "    ${CYAN}Mengembalikan symlink ke $target...${NC}"
+        if ! ln -sf "$target" "$RESOLV_CONF"; then
+            log_error "Gagal membuat symlink!"
+            read -rp "Tekan Enter..." 
+            return 1
+        fi
+    elif [[ -f "$BACKUP_CONTENT" ]]; then
         # Restore as Static File
-        echo -e "${CYAN}[i] Mengembalikan isi file static...${NC}"
-        cat "$BACKUP_CONTENT" > "$RESOLV_CONF"
+        echo -e "    ${CYAN}Mengembalikan isi file static...${NC}"
+        if ! cat "$BACKUP_CONTENT" > "$RESOLV_CONF"; then
+            log_error "Gagal menulis ke $RESOLV_CONF!"
+            read -rp "Tekan Enter..." 
+            return 1
+        fi
     else
-        echo -e "${RED}[!] Backup tidak ditemukan! Tidak bisa restore.${NC}"
-        read -p "Tekan Enter..." 
-        return
+        log_error "Backup tidak ditemukan! Tidak bisa restore."
+        read -rp "Tekan Enter..." 
+        return 1
     fi
     
     flush_dns_cache
     reload_network_manager
     send_notification "DNS Restored" "System configuration has been restored."
-    echo -e "${GREEN}[✓] Restore selesai. Sistem kembali seperti semula.${NC}"
-    read -p "Tekan Enter untuk kembali..."
+    log_ok "Restore selesai. Sistem kembali seperti semula."
+    read -rp "Tekan Enter untuk kembali..."
 }
 
-function test_latency() {
-    echo -e "${YELLOW}[*] Benchmark DNS (Ping Test)...${NC}"
+test_latency() {
+    log_step "Benchmark DNS (Ping Test)..."
     echo "------------------------------------------------"
     printf "${BOLD}%-25s %-15s %-10s${NC}\n" "Provider" "IP" "Latency"
     echo "------------------------------------------------"
 
-    # Ensure clean start
-    rm -f "$TMP_SORT"
+    # Create secure temp file
+    TMP_SORT=$(mktemp /tmp/xdns_latency.XXXXXX) || {
+        log_error "Gagal membuat file temporary!"
+        read -rp "Tekan Enter..."
+        return 1
+    }
     
     for i in "${!DNS_IPS[@]}"; do
-        IP=$(echo "${DNS_IPS[$i]}" | awk '{print $1}')
-        NAME="${DNS_NAMES[$i]}"
+        local ip name avg_ping
+        ip=$(echo "${DNS_IPS[$i]}" | awk '{print $1}')
+        name="${DNS_NAMES[$i]}"
         
         # Ping check
-        AVG_PING=$(ping -c 2 -W 1 "$IP" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
-        [[ -z "$AVG_PING" ]] && AVG_PING="999"
+        avg_ping=$(ping -c 2 -W 1 "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        [[ -z "$avg_ping" ]] && avg_ping="999"
         
-        echo "$AVG_PING|$NAME|$IP" >> "$TMP_SORT"
+        echo "$avg_ping|$name|$ip" >> "$TMP_SORT"
     done
 
-    sort -n -t '|' -k1 "$TMP_SORT" | while IFS='|' read time name ip; do
+    sort -n -t '|' -k1 "$TMP_SORT" | while IFS='|' read -r time name ip; do
+        local time_display color bc_result
         if [[ "$time" == "999" ]]; then
-            TIME_DISPLAY="${RED}Down${NC}"
+            time_display="${RED}Down${NC}"
         else
-            if (( $(echo "$time < 30" | bc -l) )); then COLOR=$GREEN
-            elif (( $(echo "$time < 100" | bc -l) )); then COLOR=$YELLOW
-            else COLOR=$RED
+            # Safe bc comparison with fallback
+            bc_result=$(echo "$time < 30" | bc -l 2>/dev/null) || bc_result="0"
+            if [[ "$bc_result" == "1" ]]; then 
+                color=$GREEN
+            else
+                bc_result=$(echo "$time < 100" | bc -l 2>/dev/null) || bc_result="0"
+                if [[ "$bc_result" == "1" ]]; then 
+                    color=$YELLOW
+                else 
+                    color=$RED
+                fi
             fi
-            TIME_DISPLAY="${COLOR}${time} ms${NC}"
+            time_display="${color}${time} ms${NC}"
         fi
-        printf "%s\n" "%s %s %s" "$name" "$ip" "$TIME_DISPLAY"
+        printf "%-25s %-15s %b\n" "$name" "$ip" "$time_display"
     done
     
     rm -f "$TMP_SORT"
+    TMP_SORT=""
     echo "------------------------------------------------"
-    read -p "Tekan Enter untuk kembali..."
+    read -rp "Tekan Enter untuk kembali..."
 }
 
-function apply_dns() {
-    local PRIMARY=$1
-    local SECONDARY=$2
-    local NAME=$3
+apply_dns() {
+    local primary="$1"
+    local secondary="${2:-}"
+    local name="$3"
+    local auto_lock="${4:-false}"
 
     # --- Pre-Flight Check ---
-    echo -e "${YELLOW}[*] Cek koneksi ke $PRIMARY...${NC}"
-    if ! ping -c 1 -W 2 "$PRIMARY" &> /dev/null; then
-        echo -e "${RED}[!] Koneksi Gagal! Server DNS tidak merespon.${NC}"
-        echo -e "    Batalkan perubahan demi keamanan.${NC}"
+    log_step "Cek koneksi ke $primary..."
+    if ! ping -c 1 -W 2 "$primary" &> /dev/null; then
+        log_error "Koneksi Gagal! Server DNS tidak merespon."
+        echo "    Batalkan perubahan demi keamanan."
         sleep 2
-        return
+        return $EXIT_NETWORK_ERROR
     fi
 
     # --- Execution ---
-    echo -e "${YELLOW}[*] Menerapkan ${NAME}...${NC}"
+    log_step "Menerapkan ${name}..."
     
     init_backup # Ensure we have the original backup ONCE
     unlock_file
 
-    # Atomic Write Strategy: Write to temp, then move
-    local TMP_CONF="/tmp/resolv.conf.new"
-    echo -e "# Generated by xdns v${VERSION} on $(date)\n# Provider: ${NAME}" > "$TMP_CONF"
-    echo "nameserver $PRIMARY" >> "$TMP_CONF"
-    [[ -n "$SECONDARY" ]] && echo "nameserver $SECONDARY" >> "$TMP_CONF"
+    # Atomic Write Strategy: Write to secure temp, then move
+    local tmp_conf
+    tmp_conf=$(mktemp /tmp/resolv.conf.XXXXXX) || {
+        log_error "Gagal membuat file temporary!"
+        sleep 2
+        return 1
+    }
+    
+    {
+        echo "# Generated by xdns v${VERSION} on $(date)"
+        echo "# Provider: ${name}"
+        echo "nameserver $primary"
+        [[ -n "$secondary" ]] && echo "nameserver $secondary"
+    } > "$tmp_conf"
 
     # Move with force to overwrite/break symlink safely
-    mv -f "$TMP_CONF" "$RESOLV_CONF"
+    if ! mv -f "$tmp_conf" "$RESOLV_CONF"; then
+        log_error "Gagal menulis ke $RESOLV_CONF!"
+        rm -f "$tmp_conf"
+        sleep 2
+        return 1
+    fi
 
     # Fix SELinux Context (Fedora/RHEL/CentOS)
     if command -v restorecon &> /dev/null; then
-        restorecon "$RESOLV_CONF"
+        restorecon "$RESOLV_CONF" 2>/dev/null || true
     fi
 
-    echo -e "${GREEN}[✓] DNS Aktif!${NC}"
+    log_ok "DNS Aktif!"
     flush_dns_cache
     reload_network_manager
-    send_notification "DNS Changed" "Provider: $NAME\nPrimary: $PRIMARY"
+    send_notification "DNS Changed" "Provider: $name\nPrimary: $primary"
 
-    echo ""
-    echo -e "${CYAN}Kunci DNS ini (Immutable)?${NC}"
-    read -p "Pilihan (y/n): " LOCK_CHOICE
-    if [[ "$LOCK_CHOICE" =~ ^[Yy]$ ]]; then
+    # Handle locking
+    if [[ "$auto_lock" == "true" ]]; then
         lock_file
+    else
+        echo ""
+        echo -e "${CYAN}Kunci DNS ini (Immutable)?${NC}"
+        read -rp "Pilihan (y/n): " lock_choice
+        if [[ "$lock_choice" =~ ^[Yy]$ ]]; then
+            lock_file
+        fi
     fi
 
-    read -p "Tekan Enter..."
+    read -rp "Tekan Enter..."
 }
 
-function set_custom_dns() {
-    echo -e "${YELLOW}[*] Set Custom DNS${NC}"
-    read -p "Primary IP   : " C_PRIM
-    read -p "Secondary IP : " C_SEC
+set_custom_dns() {
+    local c_prim c_sec
     
-    # Strict IP Regex
-    local IP_REGEX="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
+    log_step "Set Custom DNS"
+    read -rp "Primary IP   : " c_prim
+    read -rp "Secondary IP (opsional): " c_sec
     
-    if [[ ! $C_PRIM =~ $IP_REGEX ]]; then
-        echo -e "${RED}[!] Format IP tidak valid.${NC}"
+    # Validate Primary IP (required)
+    if ! validate_ipv4 "$c_prim"; then
+        log_error "Primary IP tidak valid. Gunakan format: x.x.x.x (0-255)"
         sleep 2
         return
     fi
     
-    apply_dns "$C_PRIM" "$C_SEC" "Custom DNS"
+    # Validate Secondary IP (optional, but must be valid if provided)
+    if [[ -n "$c_sec" ]] && ! validate_ipv4 "$c_sec"; then
+        log_error "Secondary IP tidak valid. Gunakan format: x.x.x.x (0-255)"
+        sleep 2
+        return
+    fi
+    
+    apply_dns "$c_prim" "$c_sec" "Custom DNS"
 }
 
-# --- Main Loop ---
+# ==============================================================================
+# CLI ARGUMENT HANDLING
+# ==============================================================================
 
-check_root
-check_dependencies
-init_backup # Cek backup saat startup
+handle_cli_set() {
+    local provider_num="$1"
+    local do_lock="${2:-false}"
+    
+    if [[ ! "$provider_num" =~ ^[1-7]$ ]]; then
+        log_error "Provider number harus 1-7"
+        exit $EXIT_ERROR
+    fi
+    
+    if [[ -z "${DNS_NAMES[$provider_num]:-}" ]]; then
+        log_error "Provider $provider_num tidak ditemukan"
+        exit $EXIT_ERROR
+    fi
+    
+    local ips="${DNS_IPS[$provider_num]}"
+    local primary="${ips%% *}"
+    local secondary="${ips#* }"
+    [[ "$primary" == "$secondary" ]] && secondary=""
+    
+    apply_dns "$primary" "$secondary" "${DNS_NAMES[$provider_num]}" "$do_lock"
+}
 
-while true; do
-    header
-    get_current_dns
-
-    echo -e "${BOLD}Pilih Provider:${NC}"
-    for i in $(echo "${!DNS_NAMES[@]}" | tr ' ' '\n' | sort -n); do
-        echo -e "  ${BOLD}$i.${NC} ${DNS_NAMES[$i]}"
+parse_arguments() {
+    local do_lock=false
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit $EXIT_SUCCESS
+                ;;
+            -v|--version)
+                show_version
+                exit $EXIT_SUCCESS
+                ;;
+            -l|--list)
+                list_providers
+                exit $EXIT_SUCCESS
+                ;;
+            -s|--set)
+                shift
+                if [[ -z "${1:-}" ]]; then
+                    log_error "Option -s memerlukan nomor provider (1-7)"
+                    exit $EXIT_ERROR
+                fi
+                local provider_num="$1"
+                shift
+                # Check for --lock flag
+                if [[ "${1:-}" == "--lock" ]]; then
+                    do_lock=true
+                    shift
+                fi
+                check_root
+                check_dependencies
+                handle_cli_set "$provider_num" "$do_lock"
+                exit $EXIT_SUCCESS
+                ;;
+            -c|--custom)
+                check_root
+                check_dependencies
+                set_custom_dns
+                exit $EXIT_SUCCESS
+                ;;
+            -r|--restore)
+                check_root
+                check_dependencies
+                restore_dns
+                exit $EXIT_SUCCESS
+                ;;
+            -t|--test)
+                check_root
+                check_dependencies
+                test_latency
+                exit $EXIT_SUCCESS
+                ;;
+            --lock)
+                do_lock=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo "Gunakan 'xdns --help' untuk melihat opsi yang tersedia."
+                exit $EXIT_ERROR
+                ;;
+        esac
     done
-    echo ""
-    echo -e "  ${BOLD}C.${NC} Custom DNS"
-    echo -e "  ${BOLD}T.${NC} Speed Test"
-    echo -e "  ${BOLD}R.${NC} Restore Original"
-    echo -e "  ${BOLD}Q.${NC} Keluar"
-    echo ""
-    read -p ">> " CHOICE
+}
 
-    case $CHOICE in
-        [1-9])
-             [[ -n "${DNS_NAMES[$CHOICE]}" ]] && \
-             IPS=${DNS_IPS[$CHOICE]} && \
-             apply_dns $(echo $IPS | awk '{print $1}') $(echo $IPS | awk '{print $2}') "${DNS_NAMES[$CHOICE]}"
-            ;;
-        [cC]*) set_custom_dns ;; 
-        [tT]*) test_latency ;; 
-        [rR]*) restore_dns ;; 
-        [qQ]*) echo -e "${GREEN}Bye!${NC}"; exit 0 ;; 
-        *) echo -e "${RED}Invalid.${NC}"; sleep 1 ;; 
-    esac
-done
+# ==============================================================================
+# INTERACTIVE MENU
+# ==============================================================================
+
+interactive_menu() {
+    while true; do
+        show_header
+        get_current_dns
+
+        echo -e "${BOLD}Pilih Provider:${NC}"
+        for i in $(echo "${!DNS_NAMES[@]}" | tr ' ' '\n' | sort -n); do
+            echo -e "  ${BOLD}$i.${NC} ${DNS_NAMES[$i]}"
+        done
+        echo ""
+        echo -e "  ${BOLD}C.${NC} Custom DNS"
+        echo -e "  ${BOLD}T.${NC} Speed Test"
+        echo -e "  ${BOLD}R.${NC} Restore Original"
+        echo -e "  ${BOLD}Q.${NC} Keluar"
+        echo ""
+        read -rp ">> " choice
+
+        case "$choice" in
+            [1-7])
+                if [[ -n "${DNS_NAMES[$choice]:-}" ]]; then
+                    local ips primary secondary
+                    ips="${DNS_IPS[$choice]}"
+                    primary="${ips%% *}"
+                    secondary="${ips#* }"
+                    [[ "$primary" == "$secondary" ]] && secondary=""
+                    apply_dns "$primary" "$secondary" "${DNS_NAMES[$choice]}"
+                fi
+                ;;
+            [cC]) set_custom_dns ;; 
+            [tT]) test_latency ;; 
+            [rR]) restore_dns ;; 
+            [qQ]) log_ok "Bye!"; exit $EXIT_SUCCESS ;; 
+            *) log_error "Invalid."; sleep 1 ;; 
+        esac
+    done
+}
+
+# ==============================================================================
+# MAIN ENTRY POINT
+# ==============================================================================
+
+main() {
+    # If arguments provided, handle CLI mode
+    if [[ $# -gt 0 ]]; then
+        parse_arguments "$@"
+    fi
+    
+    # Otherwise, run interactive mode
+    check_root
+    check_dependencies
+    init_backup
+    interactive_menu
+}
+
+# Run main with all arguments
+main "$@"
