@@ -381,9 +381,25 @@ restore_dns() {
             return 1
         fi
     else
-        log_error "Backup tidak ditemukan! Tidak bisa restore."
-        read -rp "Tekan Enter..." 
-        return 1
+        log_warn "Backup tidak ditemukan atau rusak."
+        log_info "Mencoba Smart Restore ke default system..."
+
+        # Fallback 1: Standard Systemd-resolved stub (Ubuntu/Debian/Fedora default)
+        if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
+             echo -e "    ${CYAN}Terdeteksi Systemd-resolved. Mengembalikan symlink default...${NC}"
+             ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF"
+        
+        # Fallback 2: Standard Systemd upstream file
+        elif [[ -f "/run/systemd/resolve/resolv.conf" ]]; then
+             echo -e "    ${CYAN}Terdeteksi Systemd upstream. Mengembalikan symlink...${NC}"
+             ln -sf "/run/systemd/resolve/resolv.conf" "$RESOLV_CONF"
+             
+        else
+            log_error "Gagal mendeteksi konfigurasi default sistem!"
+            log_error "Tidak ada backup dan tidak ditemukan systemd-resolved."
+            read -rp "Tekan Enter..." 
+            return 1
+        fi
     fi
     
     flush_dns_cache
@@ -481,6 +497,9 @@ apply_dns() {
         echo "nameserver $primary"
         [[ -n "$secondary" ]] && echo "nameserver $secondary"
     } > "$tmp_conf"
+
+    # Ensure file is world-readable
+    chmod 644 "$tmp_conf"
 
     # Move with force to overwrite/break symlink safely
     if ! mv -f "$tmp_conf" "$RESOLV_CONF"; then
