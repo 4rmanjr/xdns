@@ -3,11 +3,20 @@
 ![Bash](https://img.shields.io/badge/Language-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
-![Version](https://img.shields.io/badge/Version-3.1.0%20Production-green?style=flat-square)
+![Version](https://img.shields.io/badge/Version-3.2.0%20Production-green?style=flat-square)
 
 **xdns** is a robust, interactive, and safety-focused command-line tool for managing DNS configurations on Linux systems. It is designed to replace manual editing of `/etc/resolv.conf` with a secure, atomic, and feature-rich workflow.
 
 Unlike basic scripts, **xdns** treats system stability as a priority. It features pre-flight connectivity checks, atomic file operations, immutable locking mechanisms, and "Golden Image" backups to ensure you never lose your original network configuration.
+
+## 🆕 What's New in v3.2.0
+
+- **🔧 Fixed:** Browser DNS resolution after changing DNS (systemd-resolved restart)
+- **🔧 Fixed:** Restore DNS showing "corrupt" error when backup was empty
+- **🔒 Security:** Temp files now created with restrictive umask (077)
+- **🔒 Security:** Protection against command injection in notifications
+- **⚡ Improved:** Smarter backup logic with auto-detection of systemd-resolved
+- **⚡ Improved:** Stricter menu input validation
 
 ---
 

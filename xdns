@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# xdns - Advanced Linux DNS Changer (v3.1.0 Production)
+# xdns - Advanced Linux DNS Changer (v3.2.0 Production)
 # Informatif, Interaktif, Aman, dan Atomic.
 # ==============================================================================
 
@@ -19,7 +19,14 @@ readonly RESOLV_CONF="/etc/resolv.conf"
 readonly BACKUP_DIR="/var/backups/xdns"
 readonly BACKUP_CONTENT="$BACKUP_DIR/resolv.conf.orig"
 readonly BACKUP_LINK_TARGET="$BACKUP_DIR/resolv.conf.link_path"
-readonly VERSION="3.1.0"
+readonly VERSION="3.2.0"
+
+# --- Network & Timing Constants ---
+readonly PING_COUNT=2
+readonly PING_TIMEOUT=1
+readonly PREFLIGHT_TIMEOUT=2
+readonly LATENCY_FAST=30
+readonly LATENCY_MEDIUM=100
 
 # Runtime variables
 TMP_SORT=""  # Will be set securely via mktemp
@@ -240,6 +247,8 @@ show_header() {
     echo -e "${YELLOW}WARNING: Gunakan menu Restore jika ingin login WiFi Publik (Hotel/Cafe)${NC}"
     echo -e "         atau saat menggunakan VPN Kantor (Split DNS).${NC}"
     echo -e "----------------------------------------"
+    echo -e "${CYAN}Emergency Restore:${NC} sudo xdns -r"
+    echo -e "----------------------------------------"
 }
 
 get_current_dns() {
@@ -271,17 +280,35 @@ init_backup() {
         fi
     fi
 
-    if [[ ! -f "$BACKUP_CONTENT" ]]; then
+    # Backup state original SEKALI saja (Golden Image)
+    if [[ ! -f "$BACKUP_CONTENT" && ! -f "$BACKUP_LINK_TARGET" ]]; then
         log_info "Membuat backup original sistem..."
         
-        # 1. Simpan Konten
-        if ! cp -L "$RESOLV_CONF" "$BACKUP_CONTENT" 2>/dev/null; then
-            log_warn "Tidak dapat backup isi file (mungkin tidak ada)"
-        fi
-        
-        # 2. Simpan Target Symlink (jika ada)
+        # Prioritas 1: Jika symlink, simpan target symlink
         if [[ -L "$RESOLV_CONF" ]]; then
-            readlink "$RESOLV_CONF" > "$BACKUP_LINK_TARGET"
+            local link_target
+            link_target=$(readlink "$RESOLV_CONF")
+            echo "$link_target" > "$BACKUP_LINK_TARGET"
+            log_ok "Backup symlink disimpan: $link_target"
+        # Prioritas 2: Jika file biasa, simpan konten
+        elif [[ -f "$RESOLV_CONF" ]]; then
+            if cp "$RESOLV_CONF" "$BACKUP_CONTENT" 2>/dev/null; then
+                log_ok "Backup konten disimpan."
+            else
+                log_warn "Tidak dapat backup isi file."
+            fi
+        # Prioritas 3: Deteksi systemd-resolved default
+        else
+            # Simpan default systemd path untuk restore
+            if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
+                echo "/run/systemd/resolve/stub-resolv.conf" > "$BACKUP_LINK_TARGET"
+                log_ok "Backup: menggunakan systemd-resolved stub."
+            elif [[ -f "/run/systemd/resolve/resolv.conf" ]]; then
+                echo "/run/systemd/resolve/resolv.conf" > "$BACKUP_LINK_TARGET"
+                log_ok "Backup: menggunakan systemd-resolved upstream."
+            else
+                log_warn "Tidak ada konfigurasi DNS ditemukan untuk dibackup."
+            fi
         fi
     fi
 }
@@ -316,7 +343,7 @@ send_notification() {
         local bus_addr="unix:path=/run/user/$user_id/bus"
         
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
-            notify-send -a "xdns" -u normal -i network-wired "$title" "$message" 2>/dev/null || true
+            notify-send -a "xdns" -u normal -i network-wired -- "$title" "$message" 2>/dev/null || true
     fi
 }
 
@@ -324,6 +351,16 @@ reload_network_manager() {
     # Tell NetworkManager to reload so it notices the change
     if command -v nmcli &> /dev/null; then
         nmcli general reload conf 2>/dev/null || true
+    fi
+}
+
+restart_systemd_resolved() {
+    # Restart systemd-resolved agar DNS baru berlaku
+    # Ini PENTING untuk browser bisa resolve domain
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+        log_step "Restart systemd-resolved..."
+        systemctl restart systemd-resolved 2>/dev/null || true
+        sleep 1  # Tunggu service restart
     fi
 }
 
@@ -348,62 +385,85 @@ flush_dns_cache() {
     if [[ "$flushed" == true ]]; then
         log_ok "Cache DNS dibersihkan."
     fi
+    
+    # Restart systemd-resolved agar DNS baru berlaku di browser
+    restart_systemd_resolved
 }
 
 restore_dns() {
     log_step "Memulihkan konfigurasi original..."
     unlock_file
     
-    if [[ -f "$BACKUP_LINK_TARGET" ]]; then
-        # Restore as Symlink - validate target first
+    local restore_success=false
+    
+    # ========== PRIORITAS 1: Backup Symlink ==========
+    if [[ -f "$BACKUP_LINK_TARGET" && -s "$BACKUP_LINK_TARGET" ]]; then
         local target
         target=$(head -n1 "$BACKUP_LINK_TARGET" 2>/dev/null | tr -d '[:space:]')
         
-        # Validate symlink target is a reasonable path
-        if [[ -z "$target" || ! "$target" =~ ^/[a-zA-Z0-9/_.-]+$ ]]; then
-            log_error "Backup symlink target tidak valid atau corrupt!"
-            read -rp "Tekan Enter..." 
-            return 1
-        fi
-        
-        echo -e "    ${CYAN}Mengembalikan symlink ke $target...${NC}"
-        if ! ln -sf "$target" "$RESOLV_CONF"; then
-            log_error "Gagal membuat symlink!"
-            read -rp "Tekan Enter..." 
-            return 1
-        fi
-    elif [[ -f "$BACKUP_CONTENT" ]]; then
-        # Restore as Static File
-        echo -e "    ${CYAN}Mengembalikan isi file static...${NC}"
-        if ! cat "$BACKUP_CONTENT" > "$RESOLV_CONF"; then
-            log_error "Gagal menulis ke $RESOLV_CONF!"
-            read -rp "Tekan Enter..." 
-            return 1
-        fi
-    else
-        log_warn "Backup tidak ditemukan atau rusak."
-        log_info "Mencoba Smart Restore ke default system..."
-
-        # Fallback 1: Standard Systemd-resolved stub (Ubuntu/Debian/Fedora default)
-        if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
-             echo -e "    ${CYAN}Terdeteksi Systemd-resolved. Mengembalikan symlink default...${NC}"
-             ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF"
-        
-        # Fallback 2: Standard Systemd upstream file
-        elif [[ -f "/run/systemd/resolve/resolv.conf" ]]; then
-             echo -e "    ${CYAN}Terdeteksi Systemd upstream. Mengembalikan symlink...${NC}"
-             ln -sf "/run/systemd/resolve/resolv.conf" "$RESOLV_CONF"
-             
-        else
-            log_error "Gagal mendeteksi konfigurasi default sistem!"
-            log_error "Tidak ada backup dan tidak ditemukan systemd-resolved."
-            read -rp "Tekan Enter..." 
-            return 1
+        if [[ -n "$target" ]]; then
+            # Validasi target exist
+            if [[ -e "$target" || -L "$target" ]]; then
+                echo -e "    ${CYAN}Mengembalikan symlink ke $target...${NC}"
+                if ln -sf "$target" "$RESOLV_CONF" 2>/dev/null; then
+                    restore_success=true
+                fi
+            else
+                log_warn "Target symlink ($target) tidak ditemukan."
+                log_info "Mencoba fallback ke Smart Restore..."
+            fi
         fi
     fi
     
+    # ========== PRIORITAS 2: Backup Konten ==========
+    if [[ "$restore_success" == false && -f "$BACKUP_CONTENT" && -s "$BACKUP_CONTENT" ]]; then
+        echo -e "    ${CYAN}Mengembalikan isi file static...${NC}"
+        if cat "$BACKUP_CONTENT" > "$RESOLV_CONF" 2>/dev/null; then
+            restore_success=true
+        fi
+    fi
+    
+    # ========== PRIORITAS 3: Smart Restore Fallback ==========
+    if [[ "$restore_success" == false ]]; then
+        log_warn "Backup tidak ditemukan, kosong, atau rusak."
+        log_info "Mencoba Smart Restore ke default system..."
+
+        if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
+            echo -e "    ${CYAN}Terdeteksi Systemd-resolved. Mengembalikan symlink default...${NC}"
+            if ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF" 2>/dev/null; then
+                restore_success=true
+            fi
+        elif [[ -f "/run/systemd/resolve/resolv.conf" ]]; then
+            echo -e "    ${CYAN}Terdeteksi Systemd upstream. Mengembalikan symlink...${NC}"
+            if ln -sf "/run/systemd/resolve/resolv.conf" "$RESOLV_CONF" 2>/dev/null; then
+                restore_success=true
+            fi
+        fi
+    fi
+    
+    # ========== Cek Total Gagal ==========
+    if [[ "$restore_success" == false ]]; then
+        log_error "Restore DNS GAGAL!"
+        log_error "Tidak ada backup valid dan tidak ditemukan systemd-resolved."
+        log_info "Solusi manual: sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf"
+        read -rp "Tekan Enter..." 
+        return 1
+    fi
+    
+    # ========== Post-Restore ==========
     flush_dns_cache
     reload_network_manager
+    
+    # Verifikasi DNS berfungsi
+    log_step "Verifikasi koneksi DNS..."
+    sleep 1  # Tunggu service settle
+    
+    if ping -c 1 -W 2 google.com &>/dev/null; then
+        log_ok "DNS berfungsi dengan baik!"
+    else
+        log_warn "DNS mungkin belum aktif. Coba tunggu beberapa detik atau restart browser."
+    fi
+    
     send_notification "DNS Restored" "System configuration has been restored."
     log_ok "Restore selesai. Sistem kembali seperti semula."
     read -rp "Tekan Enter untuk kembali..."
@@ -415,12 +475,17 @@ test_latency() {
     printf "${BOLD}%-25s %-15s %-10s${NC}\n" "Provider" "IP" "Latency"
     echo "------------------------------------------------"
 
-    # Create secure temp file
-    TMP_SORT=$(mktemp /tmp/xdns_latency.XXXXXX) || {
+    # Create secure temp file with restrictive permissions
+    local old_umask
+    old_umask=$(umask)
+    umask 077
+    TMP_SORT=$(mktemp "${TMPDIR:-/tmp}/xdns_latency.XXXXXX") || {
+        umask "$old_umask"
         log_error "Gagal membuat file temporary!"
         read -rp "Tekan Enter..."
         return 1
     }
+    umask "$old_umask"
     
     for i in "${!DNS_IPS[@]}"; do
         local ip name avg_ping
@@ -428,7 +493,7 @@ test_latency() {
         name="${DNS_NAMES[$i]}"
         
         # Ping check
-        avg_ping=$(ping -c 2 -W 1 "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        avg_ping=$(ping -c $PING_COUNT -W $PING_TIMEOUT "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
         [[ -z "$avg_ping" ]] && avg_ping="999"
         
         echo "$avg_ping|$name|$ip" >> "$TMP_SORT"
@@ -440,11 +505,11 @@ test_latency() {
             time_display="${RED}Down${NC}"
         else
             # Safe bc comparison with fallback
-            bc_result=$(echo "$time < 30" | bc -l 2>/dev/null) || bc_result="0"
+            bc_result=$(echo "$time < $LATENCY_FAST" | bc -l 2>/dev/null) || bc_result="0"
             if [[ "$bc_result" == "1" ]]; then 
                 color=$GREEN
             else
-                bc_result=$(echo "$time < 100" | bc -l 2>/dev/null) || bc_result="0"
+                bc_result=$(echo "$time < $LATENCY_MEDIUM" | bc -l 2>/dev/null) || bc_result="0"
                 if [[ "$bc_result" == "1" ]]; then 
                     color=$YELLOW
                 else 
@@ -470,7 +535,7 @@ apply_dns() {
 
     # --- Pre-Flight Check ---
     log_step "Cek koneksi ke $primary..."
-    if ! ping -c 1 -W 2 "$primary" &> /dev/null; then
+    if ! ping -c 1 -W $PREFLIGHT_TIMEOUT "$primary" &> /dev/null; then
         log_error "Koneksi Gagal! Server DNS tidak merespon."
         echo "    Batalkan perubahan demi keamanan."
         sleep 2
@@ -484,12 +549,16 @@ apply_dns() {
     unlock_file
 
     # Atomic Write Strategy: Write to secure temp, then move
-    local tmp_conf
-    tmp_conf=$(mktemp /tmp/resolv.conf.XXXXXX) || {
+    local tmp_conf old_umask
+    old_umask=$(umask)
+    umask 077
+    tmp_conf=$(mktemp "${TMPDIR:-/tmp}/resolv.conf.XXXXXX") || {
+        umask "$old_umask"
         log_error "Gagal membuat file temporary!"
         sleep 2
         return 1
     }
+    umask "$old_umask"
     
     {
         echo "# Generated by xdns v${VERSION} on $(date)"
@@ -517,6 +586,69 @@ apply_dns() {
     log_ok "DNS Aktif!"
     flush_dns_cache
     reload_network_manager
+    
+    # ========== VERIFIKASI & AUTO-ROLLBACK ==========
+    log_step "Verifikasi koneksi internet..."
+    sleep 2  # Tunggu DNS propagate
+    
+    # Test DNS resolution dengan multiple methods (seperti browser)
+    local verify_ok=false
+    
+    # Method 1: resolvectl (paling akurat, sama seperti browser)
+    if command -v resolvectl &>/dev/null; then
+        if resolvectl query google.com &>/dev/null; then
+            verify_ok=true
+        elif resolvectl query cloudflare.com &>/dev/null; then
+            verify_ok=true
+        fi
+    # Method 2: getent (uses NSS, like most apps)
+    elif command -v getent &>/dev/null; then
+        if getent hosts google.com &>/dev/null; then
+            verify_ok=true
+        fi
+    # Method 3: ping fallback (least accurate)
+    else
+        if ping -c 1 -W 3 google.com &>/dev/null; then
+            verify_ok=true
+        fi
+    fi
+    
+    if [[ "$verify_ok" == false ]]; then
+        echo ""
+        log_error "Internet tidak berfungsi setelah ganti DNS!"
+        echo -e "${YELLOW}[!] Auto-rollback dalam 5 detik...${NC}"
+        echo -e "    Tekan Ctrl+C untuk batalkan rollback."
+        sleep 5
+        
+        # Auto-restore
+        log_step "Mengembalikan DNS ke konfigurasi sebelumnya..."
+        unlock_file
+        
+        if [[ -f "$BACKUP_LINK_TARGET" && -s "$BACKUP_LINK_TARGET" ]]; then
+            local target
+            target=$(head -n1 "$BACKUP_LINK_TARGET" 2>/dev/null | tr -d '[:space:]')
+            if [[ -n "$target" && ( -e "$target" || -L "$target" ) ]]; then
+                ln -sf "$target" "$RESOLV_CONF" 2>/dev/null
+            fi
+        elif [[ -f "$BACKUP_CONTENT" && -s "$BACKUP_CONTENT" ]]; then
+            cat "$BACKUP_CONTENT" > "$RESOLV_CONF" 2>/dev/null
+        else
+            # Emergency fallback
+            if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
+                ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF" 2>/dev/null
+            fi
+        fi
+        
+        flush_dns_cache
+        reload_network_manager
+        
+        log_ok "DNS dikembalikan ke konfigurasi sebelumnya."
+        send_notification "DNS Rollback" "DNS change failed. Restored previous configuration."
+        read -rp "Tekan Enter..."
+        return $EXIT_NETWORK_ERROR
+    fi
+    
+    log_ok "Internet berfungsi dengan baik!"
     send_notification "DNS Changed" "Provider: $name\nPrimary: $primary"
 
     # Handle locking
@@ -672,7 +804,7 @@ interactive_menu() {
         read -rp ">> " choice
 
         case "$choice" in
-            [1-7])
+            1|2|3|4|5|6|7)
                 if [[ -n "${DNS_NAMES[$choice]:-}" ]]; then
                     local ips primary secondary
                     ips="${DNS_IPS[$choice]}"
