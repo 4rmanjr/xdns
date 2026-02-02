@@ -211,7 +211,7 @@ test_constants() {
     echo "========================================"
     
     assert_true "[[ -n \"\$VERSION\" ]]" "VERSION is defined"
-    assert_true "[[ \"\$VERSION\" == \"3.2.0\" ]]" "VERSION is 3.2.0"
+    assert_true "[[ \"\$VERSION\" == \"3.3.0\" ]]" "VERSION is 3.3.0"
     
     assert_true "[[ -n \"\$RESOLV_CONF\" ]]" "RESOLV_CONF is defined"
     assert_equals "/etc/resolv.conf" "$RESOLV_CONF" "RESOLV_CONF path correct"
@@ -263,7 +263,7 @@ test_cli_help() {
     # Version should work without root
     output=$("$XDNS_SCRIPT" --version 2>&1)
     assert_exit_code 0 $? "--version exits with 0"
-    assert_true "[[ \"\$output\" == *\"3.2.0\"* ]]" "--version shows 3.2.0"
+    assert_true "[[ \"\$output\" == *\"3.3.0\"* ]]" "--version shows 3.3.0"
     
     # List should work without root
     output=$("$XDNS_SCRIPT" --list 2>&1)
@@ -284,6 +284,33 @@ test_syntax() {
     
     bash -n "$XDNS_SCRIPT" 2>/dev/null
     assert_exit_code 0 $? "Script has valid bash syntax"
+}
+
+# ==============================================================================
+# TEST: New Distro Support (v3.3.0)
+# ==============================================================================
+
+test_new_distros() {
+    echo ""
+    echo "========================================"
+    echo "Testing: New Distro Package Manager Support"
+    echo "========================================"
+    
+    # Test that install_missing_deps function contains new package managers
+    local script_content
+    script_content=$(cat "$XDNS_SCRIPT")
+    
+    assert_true "[[ \"\$script_content\" == *\"emerge\"* ]]" "Gentoo (emerge) supported"
+    assert_true "[[ \"\$script_content\" == *\"xbps-install\"* ]]" "Void Linux (xbps-install) supported"
+    assert_true "[[ \"\$script_content\" == *\"eopkg\"* ]]" "Solus (eopkg) supported"
+    
+    # Test NetworkManager persistence functions exist
+    assert_true "[[ \"\$script_content\" == *\"persist_dns_networkmanager\"* ]]" "persist_dns_networkmanager() exists"
+    assert_true "[[ \"\$script_content\" == *\"remove_dns_persistence\"* ]]" "remove_dns_persistence() exists"
+    
+    # Test systemd-networkd support
+    assert_true "[[ \"\$script_content\" == *\"systemd-networkd\"* ]]" "systemd-networkd support"
+    assert_true "[[ \"\$script_content\" == *\"connman\"* ]]" "ConnMan support"
 }
 
 # ==============================================================================
@@ -315,6 +342,7 @@ main() {
     test_validate_ipv4
     test_dns_providers
     test_cli_help
+    test_new_distros
     
     # Summary
     echo ""

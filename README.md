@@ -3,21 +3,29 @@
 ![Bash](https://img.shields.io/badge/Language-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
-![Version](https://img.shields.io/badge/Version-3.2.0%20Production-green?style=flat-square)
+![Version](https://img.shields.io/badge/Version-3.3.0%20Production-green?style=flat-square)
 
 **xdns** is a robust, interactive, and safety-focused command-line tool for managing DNS configurations on Linux systems. It is designed to replace manual editing of `/etc/resolv.conf` with a secure, atomic, and feature-rich workflow.
 
 Unlike basic scripts, **xdns** treats system stability as a priority. It features pre-flight connectivity checks, atomic file operations, immutable locking mechanisms, and "Golden Image" backups to ensure you never lose your original network configuration.
 
-## 🆕 What's New in v3.2.0
+## 🆕 What's New in v3.3.0
 
-- **🔧 Fixed:** Browser DNS resolution after changing DNS (systemd-resolved restart)
-- **🔧 Fixed:** Restore DNS showing "corrupt" error when backup was empty
-- **📦 New:** Smart dependency management (auto-detects & installs missing packages via pacman, apt, dnf, etc.)
-- **🔒 Security:** Temp files now created with restrictive umask (077)
-- **🔒 Security:** Protection against command injection in notifications
-- **⚡ Improved:** Smarter backup logic with auto-detection of systemd-resolved
-- **⚡ Improved:** Stricter menu input validation
+- **🌍 New Distros:** Added support for Gentoo, Void Linux, and Solus
+- **🔌 Network Manager:** Enhanced support for systemd-networkd and ConnMan
+- **🔒 Persistent DNS:** Lock now creates NetworkManager override to survive WiFi reconnects
+- **🔒 Security:** Fixed ShellCheck SC2207 word splitting vulnerability
+- **⚡ Improved:** Better package name mapping for Gentoo (atom format)
+
+<details>
+<summary>v3.2.0 Changes</summary>
+
+- Browser DNS resolution fix (systemd-resolved restart)
+- Restore DNS "corrupt" error fix
+- Smart dependency management
+- Temp files with restrictive umask (077)
+- Smarter backup logic
+</details>
 
 ---
 
@@ -56,6 +64,22 @@ sudo mv xdns /usr/local/bin/xdns
 
 # Clean up
 cd .. && rm -rf xdns
+```
+
+### Shell Completion (Optional)
+
+Enable tab completion for faster command entry:
+
+**Bash:**
+```bash
+sudo cp completions/xdns.bash /etc/bash_completion.d/xdns
+# Restart terminal or: source /etc/bash_completion.d/xdns
+```
+
+**Zsh:**
+```bash
+sudo cp completions/_xdns /usr/share/zsh/site-functions/_xdns
+# Restart terminal or: autoload -Uz compinit && compinit
 ```
 
 ## 🎮 Usage
@@ -119,12 +143,15 @@ sudo xdns --restore
 
 **xdns** is built to be "Distro Agnostic". It works seamlessly on:
 *   Debian / Ubuntu / Kali / Mint
-*   RHEL / Fedora / CentOS
-*   Arch Linux / Manjaro
+*   RHEL / Fedora / CentOS / Rocky
+*   Arch Linux / Manjaro / EndeavourOS
 *   Alpine Linux
-*   OpenSUSE
+*   OpenSUSE / SLES
+*   **Gentoo** *(new in v3.3.0)*
+*   **Void Linux** *(new in v3.3.0)*
+*   **Solus** *(new in v3.3.0)*
 
-It intelligently handles the differences in how these systems manage DNS caching and file attributes.
+It intelligently handles the differences in how these systems manage DNS caching, file attributes, and network services (NetworkManager, systemd-networkd, ConnMan).
 
 ### Exit Codes
 
