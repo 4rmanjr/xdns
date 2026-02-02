@@ -122,6 +122,79 @@ check_root() {
     fi
 }
 
+install_missing_deps() {
+    local missing_cmds=("$@")
+    local pkg_manager=""
+    local install_cmd=""
+    local -a packages=()
+
+    # Detect Package Manager
+    if command -v pacman &> /dev/null; then
+        pkg_manager="pacman"
+        install_cmd="pacman -S --noconfirm"
+    elif command -v apt-get &> /dev/null; then
+        pkg_manager="apt"
+        install_cmd="apt-get install -y"
+    elif command -v dnf &> /dev/null; then
+        pkg_manager="dnf"
+        install_cmd="dnf install -y"
+    elif command -v yum &> /dev/null; then
+        pkg_manager="yum"
+        install_cmd="yum install -y"
+    elif command -v zypper &> /dev/null; then
+        pkg_manager="zypper"
+        install_cmd="zypper install -y"
+    elif command -v apk &> /dev/null; then
+        pkg_manager="apk"
+        install_cmd="apk add"
+    else
+        log_error "Package manager tidak dikenali. Silakan install manual."
+        return 1
+    fi
+
+    # Map commands to packages
+    for cmd in "${missing_cmds[@]}"; do
+        case "$cmd" in
+            bc) packages+=("bc") ;;
+            ping)
+                if [[ "$pkg_manager" == "apt" ]]; then
+                    packages+=("iputils-ping")
+                else
+                    packages+=("iputils") # Arch, Fedora, etc. usually use iputils
+                fi
+                ;;
+            chattr|lsattr) packages+=("e2fsprogs") ;;
+            readlink|mktemp) packages+=("coreutils") ;;
+            *) log_warn "Tidak tahu paket untuk perintah: $cmd";;
+        esac
+    done
+
+    if [[ ${#packages[@]} -eq 0 ]]; then
+         return 1
+    fi
+
+    # Remove duplicates
+    local unique_packages=($(printf "%s\n" "${packages[@]}" | sort -u))
+
+    echo ""
+    log_warn "Ditemukan dependensi yang hilang: ${missing_cmds[*]}"
+    echo -e "    ${CYAN}Mencoba menginstall otomatis dengan $pkg_manager: ${unique_packages[*]}${NC}"
+    read -rp "    Lanjutkan instalasi? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_error "Instalasi dibatalkan oleh pengguna."
+        return 1
+    fi
+
+    log_step "Menginstall paket..."
+    if $install_cmd "${unique_packages[@]}"; then
+        log_ok "Instalasi berhasil."
+        return 0
+    else
+        log_error "Instalasi gagal."
+        return 1
+    fi
+}
+
 check_dependencies() {
     local required=("bc" "ping" "chattr" "lsattr" "readlink" "mktemp")
     local missing=()
@@ -133,9 +206,28 @@ check_dependencies() {
     done
 
     if [[ ${#missing[@]} -ne 0 ]]; then
-        log_error "Dependency Kurang: ${missing[*]}"
-        log_info "Silakan install paket tersebut via package manager Anda."
-        exit $EXIT_MISSING_DEPS
+        if ! install_missing_deps "${missing[@]}"; then
+            log_error "Dependency Kurang: ${missing[*]}"
+            log_info "Silakan install paket tersebut via package manager Anda."
+            exit $EXIT_MISSING_DEPS
+        fi
+        
+        # Re-check after install attempt
+        local still_missing=()
+        for cmd in "${required[@]}"; do
+            if ! command -v "$cmd" &> /dev/null; then
+                still_missing+=("$cmd")
+            fi
+        done
+        
+        if [[ ${#still_missing[@]} -ne 0 ]]; then
+            log_error "Dependensi masih kurang setelah upaya instalasi: ${still_missing[*]}"
+            exit $EXIT_MISSING_DEPS
+        fi
+        
+        echo "" 
+        log_ok "Semua dependensi terpenuhi. Melanjutkan..."
+        sleep 1
     fi
 }
 

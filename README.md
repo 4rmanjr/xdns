@@ -13,6 +13,7 @@ Unlike basic scripts, **xdns** treats system stability as a priority. It feature
 
 - **🔧 Fixed:** Browser DNS resolution after changing DNS (systemd-resolved restart)
 - **🔧 Fixed:** Restore DNS showing "corrupt" error when backup was empty
+- **📦 New:** Smart dependency management (auto-detects & installs missing packages via pacman, apt, dnf, etc.)
 - **🔒 Security:** Temp files now created with restrictive umask (077)
 - **🔒 Security:** Protection against command injection in notifications
 - **⚡ Improved:** Smarter backup logic with auto-detection of systemd-resolved
@@ -29,7 +30,7 @@ Unlike basic scripts, **xdns** treats system stability as a priority. It feature
 *   **🛡️ Enterprise-Grade Safety**
     *   **Pre-Flight Ping:** Verifies connectivity to the target DNS server *before* applying changes. If the server is unreachable, the operation is aborted to prevent internet loss.
     *   **Atomic Writes:** Uses temp-file-and-move strategy to prevent file corruption during write operations.
-    *   **Dependency Checks:** Automatically detects missing tools (`bc`, `ping`) and suggests installation commands based on your distro.
+    *   **Smart Dependencies:** Automatically detects missing tools (`bc`, `ping`) and offers to install them using your system's package manager (`apt`, `pacman`, `dnf`, etc.).
 *   **💾 Smart Backup & Restore**
     *   **Golden Image Backup:** Creates a permanent backup of your *original* system configuration upon first run.
     *   **Symlink Awareness:** Correctly handles modern distros (Ubuntu/Fedora) where `/etc/resolv.conf` is a symlink to `systemd-resolved`. It restores the link, not just the content.
