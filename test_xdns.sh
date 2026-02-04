@@ -476,6 +476,40 @@ test_install_logic() {
 
     # Cleanup mocks
     unset -f command apt-get read
+
+    # --- Case 3: Simulate Fedora (has 'dnf') ---
+    
+    function command() {
+        if [[ "$1" == "-v" ]]; then
+            if [[ "$2" == "pacman" ]]; then return 1; fi
+            if [[ "$2" == "apt-get" ]]; then return 1; fi
+            if [[ "$2" == "dnf" ]]; then return 0; fi
+            return 1
+        fi
+        builtin command "$@"
+    }
+    
+    function dnf() {
+        echo "MOCK_EXEC: dnf $*"
+        return 0
+    }
+    
+    function read() {
+        local var_name="${!#}"
+        eval "${var_name}='y'"
+    }
+
+    ((TESTS_RUN++))
+    output=$(install_missing_deps "bc")
+    
+    if [[ "$output" == *"MOCK_EXEC: dnf install -y bc"* ]]; then
+         log_pass "Fedora Logic: Runs dnf install"
+    else
+         log_fail "Fedora Logic: Failed dnf command"
+    fi
+
+    # Cleanup mocks
+    unset -f command dnf read
 }
 
 # ==============================================================================

@@ -676,7 +676,7 @@ test_latency() {
         name="${DNS_NAMES[$i]}"
         
         # Ping check
-        avg_ping=$(ping -c $PING_COUNT -W $PING_TIMEOUT "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        avg_ping=$(LC_ALL=C ping -c $PING_COUNT -W $PING_TIMEOUT "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
         [[ -z "$avg_ping" ]] && avg_ping="999"
         
         echo "$avg_ping|$name|$ip" >> "$TMP_SORT"
