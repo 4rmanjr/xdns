@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # xdns - Advanced Linux DNS Changer (v3.2.0 Production)
-# Informatif, Interaktif, Aman, dan Atomic.
+# Informative, Interactive, Secure, and Atomic.
 # ==============================================================================
 
 # --- Strict Mode (partial - without -e for interactive) ---
@@ -419,7 +419,7 @@ get_current_dns() {
 }
 
 init_backup() {
-    # HANYA Backup jika belum pernah dibackup sebelumnya (Golden Image)
+    # ONLY backup if not already backed up (Golden Image)
     if [[ ! -d "$BACKUP_DIR" ]]; then
         if ! mkdir -p "$BACKUP_DIR"; then
             log_error "Failed to create backup directory: $BACKUP_DIR"
@@ -427,26 +427,26 @@ init_backup() {
         fi
     fi
 
-    # Backup state original SEKALI saja (Golden Image)
+    # Backup original state ONCE (Golden Image)
     if [[ ! -f "$BACKUP_CONTENT" && ! -f "$BACKUP_LINK_TARGET" ]]; then
         log_info "Creating original system backup..."
         
-        # Prioritas 1: Jika symlink, simpan target symlink
+        # Priority 1: If symlink, save symlink target
         if [[ -L "$RESOLV_CONF" ]]; then
             local link_target
             link_target=$(readlink "$RESOLV_CONF")
             echo "$link_target" > "$BACKUP_LINK_TARGET"
             log_ok "Symlink backup saved: $link_target"
-        # Prioritas 2: Jika file biasa, simpan konten
+        # Priority 2: If regular file, save content
         elif [[ -f "$RESOLV_CONF" ]]; then
             if cp "$RESOLV_CONF" "$BACKUP_CONTENT" 2>/dev/null; then
                 log_ok "Content backup saved."
             else
                 log_warn "Unable to backup file content."
             fi
-        # Prioritas 3: Deteksi systemd-resolved default
+        # Priority 3: Detect default systemd-resolved
         else
-            # Simpan default systemd path untuk restore
+            # Save default systemd path for restore
             if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
                 echo "/run/systemd/resolve/stub-resolv.conf" > "$BACKUP_LINK_TARGET"
                 log_ok "Backup: using systemd-resolved stub."
@@ -537,12 +537,12 @@ reload_network_manager() {
 }
 
 restart_systemd_resolved() {
-    # Restart systemd-resolved agar DNS baru berlaku
-    # Ini PENTING untuk browser bisa resolve domain
+    # Restart systemd-resolved so new DNS takes effect
+    # This is IMPORTANT for browsers to resolve domains
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
         log_step "Restarting systemd-resolved..."
         systemctl restart systemd-resolved 2>/dev/null || true
-        sleep 1  # Tunggu service restart
+        sleep 1  # Wait for service restart
     fi
 }
 
@@ -568,7 +568,7 @@ flush_dns_cache() {
         log_ok "DNS Cache flushed."
     fi
     
-    # Restart systemd-resolved agar DNS baru berlaku di browser
+    # Restart systemd-resolved so new DNS takes effect in browsers
     restart_systemd_resolved
 }
 
@@ -579,13 +579,13 @@ restore_dns() {
     
     local restore_success=false
     
-    # ========== PRIORITAS 1: Backup Symlink ==========
+    # ========== PRIORITY 1: Backup Symlink ==========
     if [[ -f "$BACKUP_LINK_TARGET" && -s "$BACKUP_LINK_TARGET" ]]; then
         local target
         target=$(head -n1 "$BACKUP_LINK_TARGET" 2>/dev/null | tr -d '[:space:]')
         
         if [[ -n "$target" ]]; then
-            # Validasi target exist
+            # Validate target exists
             if [[ -e "$target" || -L "$target" ]]; then
                 echo -e "    ${CYAN}Restoring symlink to $target...${NC}"
                 if ln -sf "$target" "$RESOLV_CONF" 2>/dev/null; then
@@ -598,7 +598,7 @@ restore_dns() {
         fi
     fi
     
-    # ========== PRIORITAS 2: Backup Konten ==========
+    # ========== PRIORITY 2: Backup Content ==========
     if [[ "$restore_success" == false && -f "$BACKUP_CONTENT" && -s "$BACKUP_CONTENT" ]]; then
         echo -e "    ${CYAN}Restoring static file content...${NC}"
         if cat "$BACKUP_CONTENT" > "$RESOLV_CONF" 2>/dev/null; then
@@ -606,7 +606,7 @@ restore_dns() {
         fi
     fi
     
-    # ========== PRIORITAS 3: Smart Restore Fallback ==========
+    # ========== PRIORITY 3: Smart Restore Fallback ==========
     if [[ "$restore_success" == false ]]; then
         log_warn "Backup not found, empty, or corrupted."
         log_info "Attempting Smart Restore to system default..."
@@ -624,7 +624,7 @@ restore_dns() {
         fi
     fi
     
-    # ========== Cek Total Gagal ==========
+    # ========== Check Total Failure ==========
     if [[ "$restore_success" == false ]]; then
         log_error "Restore DNS FAILED!"
         log_error "No valid backup and systemd-resolved not found."
@@ -637,9 +637,9 @@ restore_dns() {
     flush_dns_cache
     reload_network_manager
     
-    # Verifikasi DNS berfungsi
+    # Verify DNS works
     log_step "Verifying DNS connection..."
-    sleep 1  # Tunggu service settle
+    sleep 1  # Wait for service settle
     
     if ping -c 1 -W 2 google.com &>/dev/null; then
         log_ok "DNS is working properly!"
@@ -799,14 +799,14 @@ apply_dns() {
     flush_dns_cache
     reload_network_manager
     
-    # ========== VERIFIKASI & AUTO-ROLLBACK ==========
+    # ========== VERIFICATION & AUTO-ROLLBACK ==========
     log_step "Verifying internet connection..."
-    sleep 2  # Tunggu DNS propagate
+    sleep 2  # Wait for DNS propagate
     
-    # Test DNS resolution dengan multiple methods (seperti browser)
+    # Test DNS resolution with multiple methods (like browser)
     local verify_ok=false
     
-    # Method 1: resolvectl (paling akurat, sama seperti browser)
+    # Method 1: resolvectl (most accurate, same as browser)
     if command -v resolvectl &>/dev/null; then
         if resolvectl query google.com &>/dev/null; then
             verify_ok=true
@@ -1054,5 +1054,7 @@ main() {
     interactive_menu
 }
 
-# Run main with all arguments
-main "$@"
+# Only run main if executed directly, not when sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

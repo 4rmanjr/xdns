@@ -110,16 +110,9 @@ source_functions() {
     local tmp_file
     tmp_file=$(mktemp)
     
-    # Extract function definitions (skip main call at the end)
-    # Also skip readonly variable definitions that might conflict
-    sed -e '/^main "\$@"$/d' \
-        -e '/^readonly RED=/d' \
-        -e '/^readonly GREEN=/d' \
-        -e '/^readonly YELLOW=/d' \
-        -e '/^readonly BLUE=/d' \
-        -e '/^readonly CYAN=/d' \
-        -e '/^readonly NC=/d' \
-        "$XDNS_SCRIPT" > "$tmp_file"
+    # Filter out readonly variable definitions to avoid conflicts during testing
+    # The 'main' check is no longer needed due to the "If Sourced" guard in xdns
+    grep -vE "^readonly (RED|GREEN|YELLOW|BLUE|CYAN|NC)=" "$XDNS_SCRIPT" > "$tmp_file"
     
     # Source the modified script
     # shellcheck disable=SC1090
@@ -195,17 +188,17 @@ test_dns_providers() {
     output=$("$XDNS_SCRIPT" --list 2>&1)
     
     # Check all 7 providers appear in list
-    assert_true "[[ \"\$output\" == *\"Google\"* ]]" "Provider 1 exists (Google)"
-    assert_true "[[ \"\$output\" == *\"Cloudflare\"* ]]" "Provider 2 exists (Cloudflare)"
-    assert_true "[[ \"\$output\" == *\"Quad9\"* ]]" "Provider 4 exists (Quad9)"
-    assert_true "[[ \"\$output\" == *\"AdGuard\"* ]]" "Provider 5 exists (AdGuard)"
-    assert_true "[[ \"\$output\" == *\"OpenDNS\"* ]]" "Provider 6 exists (OpenDNS)"
-    assert_true "[[ \"\$output\" == *\"Verisign\"* ]]" "Provider 7 exists (Verisign)"
+    assert_true "[[ \"$output\" == *\"Google\"* ]]" "Provider 1 exists (Google)"
+    assert_true "[[ \"$output\" == *\"Cloudflare\"* ]]" "Provider 2 exists (Cloudflare)"
+    assert_true "[[ \"$output\" == *\"Quad9\"* ]]" "Provider 4 exists (Quad9)"
+    assert_true "[[ \"$output\" == *\"AdGuard\"* ]]" "Provider 5 exists (AdGuard)"
+    assert_true "[[ \"$output\" == *\"OpenDNS\"* ]]" "Provider 6 exists (OpenDNS)"
+    assert_true "[[ \"$output\" == *\"Verisign\"* ]]" "Provider 7 exists (Verisign)"
     
     # Check IPs appear in list
-    assert_true "[[ \"\$output\" == *\"8.8.8.8\"* ]]" "Google DNS IP shown"
-    assert_true "[[ \"\$output\" == *\"1.1.1.1\"* ]]" "Cloudflare DNS IP shown"
-    assert_true "[[ \"\$output\" == *\"9.9.9.9\"* ]]" "Quad9 DNS IP shown"
+    assert_true "[[ \"$output\" == *\"8.8.8.8\"* ]]" "Google DNS IP shown"
+    assert_true "[[ \"$output\" == *\"1.1.1.1\"* ]]" "Cloudflare DNS IP shown"
+    assert_true "[[ \"$output\" == *\"9.9.9.9\"* ]]" "Quad9 DNS IP shown"
 }
 
 # ==============================================================================
@@ -218,20 +211,20 @@ test_constants() {
     echo "Testing: Constants Definition"
     echo "========================================"
     
-    assert_true "[[ -n \"\$VERSION\" ]]" "VERSION is defined"
-    assert_true "[[ \"\$VERSION\" == \"3.3.0\" ]]" "VERSION is 3.3.0"
+    assert_true "[[ -n \"$VERSION\" ]]" "VERSION is defined"
+    assert_true "[[ \"$VERSION\" == \"3.3.0\" ]]" "VERSION is 3.3.0"
     
-    assert_true "[[ -n \"\$RESOLV_CONF\" ]]" "RESOLV_CONF is defined"
+    assert_true "[[ -n \"$RESOLV_CONF\" ]]" "RESOLV_CONF is defined"
     assert_equals "/etc/resolv.conf" "$RESOLV_CONF" "RESOLV_CONF path correct"
     
-    assert_true "[[ -n \"\$BACKUP_DIR\" ]]" "BACKUP_DIR is defined"
+    assert_true "[[ -n \"$BACKUP_DIR\" ]]" "BACKUP_DIR is defined"
     assert_equals "/var/backups/xdns" "$BACKUP_DIR" "BACKUP_DIR path correct"
     
     # Network constants
-    assert_true "[[ \"\$PING_COUNT\" -gt 0 ]]" "PING_COUNT is positive"
-    assert_true "[[ \"\$PING_TIMEOUT\" -gt 0 ]]" "PING_TIMEOUT is positive"
-    assert_true "[[ \"\$LATENCY_FAST\" -gt 0 ]]" "LATENCY_FAST is positive"
-    assert_true "[[ \"\$LATENCY_MEDIUM\" -gt \"\$LATENCY_FAST\" ]]" "LATENCY_MEDIUM > LATENCY_FAST"
+    assert_true "[[ \"$PING_COUNT\" -gt 0 ]]" "PING_COUNT is positive"
+    assert_true "[[ \"$PING_TIMEOUT\" -gt 0 ]]" "PING_TIMEOUT is positive"
+    assert_true "[[ \"$LATENCY_FAST\" -gt 0 ]]" "LATENCY_FAST is positive"
+    assert_true "[[ \"$LATENCY_MEDIUM\" -gt \"$LATENCY_FAST\" ]]" "LATENCY_MEDIUM > LATENCY_FAST"
 }
 
 # ==============================================================================
@@ -265,19 +258,19 @@ test_cli_help() {
     local output
     output=$("$XDNS_SCRIPT" --help 2>&1)
     assert_exit_code 0 $? "--help exits with 0"
-    assert_true "[[ \"\$output\" == *\"USAGE\"* ]]" "--help contains USAGE"
-    assert_true "[[ \"\$output\" == *\"OPTIONS\"* ]]" "--help contains OPTIONS"
+    assert_true "[[ \"$output\" == *\"USAGE\"* ]]" "--help contains USAGE"
+    assert_true "[[ \"$output\" == *\"OPTIONS\"* ]]" "--help contains OPTIONS"
     
     # Version should work without root
     output=$("$XDNS_SCRIPT" --version 2>&1)
     assert_exit_code 0 $? "--version exits with 0"
-    assert_true "[[ \"\$output\" == *\"3.3.0\"* ]]" "--version shows 3.3.0"
+    assert_true "[[ \"$output\" == *\"3.3.0\"* ]]" "--version shows 3.3.0"
     
     # List should work without root
     output=$("$XDNS_SCRIPT" --list 2>&1)
     assert_exit_code 0 $? "--list exits with 0"
-    assert_true "[[ \"\$output\" == *\"Google\"* ]]" "--list shows Google"
-    assert_true "[[ \"\$output\" == *\"Cloudflare\"* ]]" "--list shows Cloudflare"
+    assert_true "[[ \"$output\" == *\"Google\"* ]]" "--list shows Google"
+    assert_true "[[ \"$output\" == *\"Cloudflare\"* ]]" "--list shows Cloudflare"
 }
 
 # ==============================================================================
@@ -338,21 +331,151 @@ test_new_distros() {
     echo "Testing: New Distro Package Manager Support"
     echo "========================================"
     
-    # Test that install_missing_deps function contains new package managers
-    local script_content
-    script_content=$(cat "$XDNS_SCRIPT")
+    # Check directly in the file to avoid eval issues with large content
     
-    assert_true "[[ \"\$script_content\" == *\"emerge\"* ]]" "Gentoo (emerge) supported"
-    assert_true "[[ \"\$script_content\" == *\"xbps-install\"* ]]" "Void Linux (xbps-install) supported"
-    assert_true "[[ \"\$script_content\" == *\"eopkg\"* ]]" "Solus (eopkg) supported"
+    if grep -q "emerge" "$XDNS_SCRIPT"; then
+        log_pass "Gentoo (emerge) supported"
+    else
+        log_fail "Gentoo (emerge) supported"
+    fi
+    ((TESTS_RUN++))
+
+    if grep -q "xbps-install" "$XDNS_SCRIPT"; then
+        log_pass "Void Linux (xbps-install) supported"
+    else
+        log_fail "Void Linux (xbps-install) supported"
+    fi
+    ((TESTS_RUN++))
+
+    if grep -q "eopkg" "$XDNS_SCRIPT"; then
+        log_pass "Solus (eopkg) supported"
+    else
+        log_fail "Solus (eopkg) supported"
+    fi
+    ((TESTS_RUN++))
     
     # Test NetworkManager persistence functions exist
-    assert_true "[[ \"\$script_content\" == *\"persist_dns_networkmanager\"* ]]" "persist_dns_networkmanager() exists"
-    assert_true "[[ \"\$script_content\" == *\"remove_dns_persistence\"* ]]" "remove_dns_persistence() exists"
+    if grep -q "persist_dns_networkmanager" "$XDNS_SCRIPT"; then
+        log_pass "persist_dns_networkmanager() exists"
+    else
+        log_fail "persist_dns_networkmanager() exists"
+    fi
+    ((TESTS_RUN++))
+
+    if grep -q "remove_dns_persistence" "$XDNS_SCRIPT"; then
+        log_pass "remove_dns_persistence() exists"
+    else
+        log_fail "remove_dns_persistence() exists"
+    fi
+    ((TESTS_RUN++))
     
     # Test systemd-networkd support
-    assert_true "[[ \"\$script_content\" == *\"systemd-networkd\"* ]]" "systemd-networkd support"
-    assert_true "[[ \"\$script_content\" == *\"connman\"* ]]" "ConnMan support"
+    if grep -q "systemd-networkd" "$XDNS_SCRIPT"; then
+        log_pass "systemd-networkd support"
+    else
+        log_fail "systemd-networkd support"
+    fi
+    ((TESTS_RUN++))
+
+    if grep -q "connman" "$XDNS_SCRIPT"; then
+        log_pass "ConnMan support"
+    else
+        log_fail "ConnMan support"
+    fi
+    ((TESTS_RUN++))
+}
+
+# ==============================================================================
+# TEST: Dependency Installation Logic (Mocking)
+# ==============================================================================
+
+test_install_logic() {
+    echo ""
+    echo "========================================"
+    echo "Testing: Installation Logic (Mocked)"
+    echo "========================================"
+
+    # 1. Mock 'command' to simulate specific Distros
+    #    We mock directly in current shell and unset later to avoid subshell scope issues
+    
+    # --- Case 1: Simulate Arch Linux (has 'pacman') ---
+    
+    # Override 'command'
+    function command() {
+        if [[ "$1" == "-v" ]]; then
+            if [[ "$2" == "pacman" ]]; then return 0; fi
+            if [[ "$2" == "apt-get" ]]; then return 1; fi
+            # ... return 1 for others
+        fi
+        # Fallback to original command
+        builtin command "$@"
+    }
+    
+    # Override 'pacman'
+    function pacman() {
+        echo "MOCK_EXEC: pacman $*"
+        return 0
+    }
+    
+    # Override 'read'
+    function read() {
+        local var_name="${!#}"
+        eval "${var_name}='y'"
+    }
+
+    # Run target function
+    ((TESTS_RUN++))
+    local output
+    output=$(install_missing_deps "bc" "ping")
+    
+    if [[ "$output" == *"MOCK_EXEC: pacman -Sy --noconfirm"* ]]; then
+        log_pass "Arch Logic: Detects pacman correctly"
+    else
+        log_fail "Arch Logic: Failed to detect pacman"
+    fi
+    
+    ((TESTS_RUN++))
+    if [[ "$output" == *"iputils"* ]]; then
+        log_pass "Arch Logic: Maps 'ping' to 'iputils'"
+    else
+        log_fail "Arch Logic: Failed map 'ping' -> 'iputils'"
+    fi
+
+    # Cleanup mocks
+    unset -f command pacman read
+
+    # --- Case 2: Simulate Ubuntu/Debian (has 'apt-get') ---
+    
+    function command() {
+        if [[ "$1" == "-v" ]]; then
+            if [[ "$2" == "pacman" ]]; then return 1; fi
+            if [[ "$2" == "apt-get" ]]; then return 0; fi
+            return 1
+        fi
+        builtin command "$@"
+    }
+    
+    function apt-get() {
+        echo "MOCK_EXEC: apt-get $*"
+        return 0
+    }
+    
+    function read() {
+        local var_name="${!#}"
+        eval "${var_name}='y'"
+    }
+
+    ((TESTS_RUN++))
+    output=$(install_missing_deps "shellcheck")
+    
+    if [[ "$output" == *"MOCK_EXEC: apt-get update"* ]]; then
+         log_pass "Debian Logic: Runs apt-get update"
+    else
+         log_fail "Debian Logic: Missing apt-get update"
+    fi
+
+    # Cleanup mocks
+    unset -f command apt-get read
 }
 
 # ==============================================================================
@@ -386,6 +509,7 @@ main() {
     test_dns_providers
     test_cli_help
     test_new_distros
+    test_install_logic
     
     # Summary
     echo ""
