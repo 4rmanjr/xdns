@@ -111,7 +111,15 @@ source_functions() {
     tmp_file=$(mktemp)
     
     # Extract function definitions (skip main call at the end)
-    sed '/^main "\$@"$/d' "$XDNS_SCRIPT" > "$tmp_file"
+    # Also skip readonly variable definitions that might conflict
+    sed -e '/^main "\$@"$/d' \
+        -e '/^readonly RED=/d' \
+        -e '/^readonly GREEN=/d' \
+        -e '/^readonly YELLOW=/d' \
+        -e '/^readonly BLUE=/d' \
+        -e '/^readonly CYAN=/d' \
+        -e '/^readonly NC=/d' \
+        "$XDNS_SCRIPT" > "$tmp_file"
     
     # Source the modified script
     # shellcheck disable=SC1090
@@ -286,6 +294,40 @@ test_syntax() {
     assert_exit_code 0 $? "Script has valid bash syntax"
 }
 
+test_lint() {
+    echo ""
+    echo "========================================"
+    echo "Testing: ShellCheck Linting"
+    echo "========================================"
+
+    if ! command -v shellcheck &> /dev/null; then
+        echo -e "${YELLOW}[!] ShellCheck not installed.${NC}"
+        log_info "ShellCheck is recommended for code quality testing."
+        read -rp "    Would you like to install it now? (y/n): " install_choice
+        if [[ "$install_choice" =~ ^[Yy]$ ]]; then
+            # We need root for installation, install_missing_deps handles the prompt
+            # but the test script is usually run as non-root
+            if [[ $EUID -ne 0 ]]; then
+                log_info "Installation requires sudo privileges."
+            fi
+            if install_missing_deps "shellcheck"; then
+                log_ok "ShellCheck installed successfully."
+            else
+                log_error "Failed to install ShellCheck."
+                return 1
+            fi
+        else
+            echo -e "${YELLOW}[SKIP] Skipping lint test.${NC}"
+            return 0
+        fi
+    fi
+
+    if command -v shellcheck &> /dev/null; then
+        shellcheck "$XDNS_SCRIPT"
+        assert_exit_code 0 $? "ShellCheck passed (no issues found)"
+    fi
+}
+
 # ==============================================================================
 # TEST: New Distro Support (v3.3.0)
 # ==============================================================================
@@ -337,6 +379,7 @@ main() {
     
     # Run tests
     test_syntax
+    test_lint
     test_exit_codes
     test_constants
     test_validate_ipv4

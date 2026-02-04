@@ -118,7 +118,7 @@ safe_exit() {
     local exit_code=$?
     cleanup
     if [[ $exit_code -ne 0 ]]; then
-        echo -e "\n${YELLOW}[!] Script dihentikan.${NC}"
+        echo -e "\n${YELLOW}[!] Script terminated.${NC}"
     fi
     exit $exit_code
 }
@@ -131,8 +131,8 @@ trap 'exit 130' SIGINT SIGTERM
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "Akses Root diperlukan."
-        echo "    Jalankan: sudo xdns"
+        log_error "Root access required."
+        echo "    Run: sudo xdns"
         exit $EXIT_NOT_ROOT
     fi
 }
@@ -146,10 +146,10 @@ install_missing_deps() {
     # Detect Package Manager (ordered by popularity)
     if command -v pacman &> /dev/null; then
         pkg_manager="pacman"
-        install_cmd="pacman -S --noconfirm"
+        install_cmd="pacman -Sy --noconfirm"
     elif command -v apt-get &> /dev/null; then
         pkg_manager="apt"
-        install_cmd="apt-get install -y"
+        install_cmd="apt-get update && apt-get install -y"
     elif command -v dnf &> /dev/null; then
         pkg_manager="dnf"
         install_cmd="dnf install -y"
@@ -161,7 +161,7 @@ install_missing_deps() {
         install_cmd="zypper install -y"
     elif command -v apk &> /dev/null; then
         pkg_manager="apk"
-        install_cmd="apk add"
+        install_cmd="apk add --update"
     elif command -v emerge &> /dev/null; then
         pkg_manager="portage"
         install_cmd="emerge --ask=n"
@@ -172,7 +172,7 @@ install_missing_deps() {
         pkg_manager="eopkg"
         install_cmd="eopkg install -y"
     else
-        log_error "Package manager tidak dikenali. Silakan install manual."
+        log_error "Unknown package manager. Please install manually."
         return 1
     fi
 
@@ -207,7 +207,14 @@ install_missing_deps() {
                     packages+=("coreutils")
                 fi
                 ;;
-            *) log_warn "Tidak tahu paket untuk perintah: $cmd";;
+            shellcheck)
+                if [[ "$pkg_manager" == "portage" ]]; then
+                    packages+=("dev-util/shellcheck")
+                else
+                    packages+=("shellcheck")
+                fi
+                ;;
+            *) log_warn "Unknown package for command: $cmd";;
         esac
     done
 
@@ -220,20 +227,20 @@ install_missing_deps() {
     readarray -t unique_packages < <(printf "%s\n" "${packages[@]}" | sort -u)
 
     echo ""
-    log_warn "Ditemukan dependensi yang hilang: ${missing_cmds[*]}"
-    echo -e "    ${CYAN}Mencoba menginstall otomatis dengan $pkg_manager: ${unique_packages[*]}${NC}"
-    read -rp "    Lanjutkan instalasi? (y/n): " confirm
+    log_warn "Missing dependencies found: ${missing_cmds[*]}"
+    echo -e "    ${CYAN}Attempting auto-install with $pkg_manager: ${unique_packages[*]}${NC}"
+    read -rp "    Continue installation? (y/n): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        log_error "Instalasi dibatalkan oleh pengguna."
+        log_error "Installation cancelled by user."
         return 1
     fi
 
-    log_step "Menginstall paket..."
+    log_step "Installing packages..."
     if $install_cmd "${unique_packages[@]}"; then
-        log_ok "Instalasi berhasil."
+        log_ok "Installation successful."
         return 0
     else
-        log_error "Instalasi gagal."
+        log_error "Installation failed."
         return 1
     fi
 }
@@ -250,8 +257,8 @@ check_dependencies() {
 
     if [[ ${#missing[@]} -ne 0 ]]; then
         if ! install_missing_deps "${missing[@]}"; then
-            log_error "Dependency Kurang: ${missing[*]}"
-            log_info "Silakan install paket tersebut via package manager Anda."
+            log_error "Missing Dependencies: ${missing[*]}"
+            log_info "Please install these packages via your package manager."
             exit $EXIT_MISSING_DEPS
         fi
         
@@ -264,12 +271,12 @@ check_dependencies() {
         done
         
         if [[ ${#still_missing[@]} -ne 0 ]]; then
-            log_error "Dependensi masih kurang setelah upaya instalasi: ${still_missing[*]}"
+            log_error "Dependencies still missing after installation attempt: ${still_missing[*]}"
             exit $EXIT_MISSING_DEPS
         fi
         
         echo "" 
-        log_ok "Semua dependensi terpenuhi. Melanjutkan..."
+        log_ok "All dependencies satisfied. Continuing..."
         sleep 1
     fi
 }
@@ -384,20 +391,20 @@ show_header() {
     echo -e "${NC}"
     echo -e "${BLUE}:: Universal DNS Manager v${VERSION} ::${NC}"
     echo -e "----------------------------------------"
-    echo -e "${YELLOW}WARNING: Gunakan menu Restore jika ingin login WiFi Publik (Hotel/Cafe)${NC}"
-    echo -e "         atau saat menggunakan VPN Kantor (Split DNS).${NC}"
+    echo -e "${YELLOW}WARNING: Use Restore menu if you want to login to Public WiFi (Hotel/Cafe)${NC}"
+    echo -e "         or when using Corporate VPN (Split DNS).${NC}"
     echo -e "----------------------------------------"
     echo -e "${CYAN}Emergency Restore:${NC} sudo xdns -r"
     echo -e "----------------------------------------"
 }
 
 get_current_dns() {
-    log_info "DNS Saat Ini:"
+    log_info "Current DNS:"
     if [[ -f "$RESOLV_CONF" ]]; then
         if [[ -L "$RESOLV_CONF" ]]; then
             local target
             target=$(readlink -f "$RESOLV_CONF")
-            echo -e "    ${CYAN}(Symlink ke: $target)${NC}"
+            echo -e "    ${CYAN}(Symlink to: $target)${NC}"
         fi
         
         grep "nameserver" "$RESOLV_CONF" 2>/dev/null | head -n 3 | awk '{print "    ➜ " $2}'
@@ -406,7 +413,7 @@ get_current_dns() {
             echo -e "${RED}    (LOCKED / IMMUTABLE)${NC}"
         fi
     else
-        log_error "Tidak dapat membaca $RESOLV_CONF"
+        log_error "Unable to read $RESOLV_CONF"
     fi
     echo ""
 }
@@ -415,39 +422,39 @@ init_backup() {
     # HANYA Backup jika belum pernah dibackup sebelumnya (Golden Image)
     if [[ ! -d "$BACKUP_DIR" ]]; then
         if ! mkdir -p "$BACKUP_DIR"; then
-            log_error "Gagal membuat direktori backup: $BACKUP_DIR"
+            log_error "Failed to create backup directory: $BACKUP_DIR"
             return 1
         fi
     fi
 
     # Backup state original SEKALI saja (Golden Image)
     if [[ ! -f "$BACKUP_CONTENT" && ! -f "$BACKUP_LINK_TARGET" ]]; then
-        log_info "Membuat backup original sistem..."
+        log_info "Creating original system backup..."
         
         # Prioritas 1: Jika symlink, simpan target symlink
         if [[ -L "$RESOLV_CONF" ]]; then
             local link_target
             link_target=$(readlink "$RESOLV_CONF")
             echo "$link_target" > "$BACKUP_LINK_TARGET"
-            log_ok "Backup symlink disimpan: $link_target"
+            log_ok "Symlink backup saved: $link_target"
         # Prioritas 2: Jika file biasa, simpan konten
         elif [[ -f "$RESOLV_CONF" ]]; then
             if cp "$RESOLV_CONF" "$BACKUP_CONTENT" 2>/dev/null; then
-                log_ok "Backup konten disimpan."
+                log_ok "Content backup saved."
             else
-                log_warn "Tidak dapat backup isi file."
+                log_warn "Unable to backup file content."
             fi
         # Prioritas 3: Deteksi systemd-resolved default
         else
             # Simpan default systemd path untuk restore
             if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
                 echo "/run/systemd/resolve/stub-resolv.conf" > "$BACKUP_LINK_TARGET"
-                log_ok "Backup: menggunakan systemd-resolved stub."
+                log_ok "Backup: using systemd-resolved stub."
             elif [[ -f "/run/systemd/resolve/resolv.conf" ]]; then
                 echo "/run/systemd/resolve/resolv.conf" > "$BACKUP_LINK_TARGET"
-                log_ok "Backup: menggunakan systemd-resolved upstream."
+                log_ok "Backup: using systemd-resolved upstream."
             else
-                log_warn "Tidak ada konfigurasi DNS ditemukan untuk dibackup."
+                log_warn "No DNS configuration found to backup."
             fi
         fi
     fi
@@ -465,9 +472,9 @@ unlock_file() {
 lock_file() {
     chattr +i "$RESOLV_CONF" > /dev/null 2>&1
     if lsattr "$RESOLV_CONF" 2>/dev/null | grep -q "i"; then
-        log_ok "File DNS dikunci (Immutable)."
+        log_ok "DNS file locked (Immutable)."
     else
-        log_error "Gagal mengunci file (Filesystem tidak mendukung chattr?)"
+        log_error "Failed to lock file (Filesystem does not support chattr?)"
     fi
 }
 
@@ -482,7 +489,7 @@ persist_dns_networkmanager() {
 [main]
 dns=none
 EOF
-        log_ok "NetworkManager DNS override dinonaktifkan."
+        log_ok "NetworkManager DNS override disabled."
     fi
 }
 
@@ -492,7 +499,7 @@ remove_dns_persistence() {
     
     if [[ -f "$nm_dns_conf" ]]; then
         rm -f "$nm_dns_conf"
-        log_ok "NetworkManager DNS override dihapus."
+        log_ok "NetworkManager DNS override removed."
     fi
 }
 
@@ -533,7 +540,7 @@ restart_systemd_resolved() {
     # Restart systemd-resolved agar DNS baru berlaku
     # Ini PENTING untuk browser bisa resolve domain
     if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-        log_step "Restart systemd-resolved..."
+        log_step "Restarting systemd-resolved..."
         systemctl restart systemd-resolved 2>/dev/null || true
         sleep 1  # Tunggu service restart
     fi
@@ -558,7 +565,7 @@ flush_dns_cache() {
     fi
 
     if [[ "$flushed" == true ]]; then
-        log_ok "Cache DNS dibersihkan."
+        log_ok "DNS Cache flushed."
     fi
     
     # Restart systemd-resolved agar DNS baru berlaku di browser
@@ -566,7 +573,7 @@ flush_dns_cache() {
 }
 
 restore_dns() {
-    log_step "Memulihkan konfigurasi original..."
+    log_step "Restoring original configuration..."
     unlock_file
     remove_dns_persistence  # Clean up NetworkManager override
     
@@ -580,20 +587,20 @@ restore_dns() {
         if [[ -n "$target" ]]; then
             # Validasi target exist
             if [[ -e "$target" || -L "$target" ]]; then
-                echo -e "    ${CYAN}Mengembalikan symlink ke $target...${NC}"
+                echo -e "    ${CYAN}Restoring symlink to $target...${NC}"
                 if ln -sf "$target" "$RESOLV_CONF" 2>/dev/null; then
                     restore_success=true
                 fi
             else
-                log_warn "Target symlink ($target) tidak ditemukan."
-                log_info "Mencoba fallback ke Smart Restore..."
+                log_warn "Target symlink ($target) not found."
+                log_info "Attempting fallback to Smart Restore..."
             fi
         fi
     fi
     
     # ========== PRIORITAS 2: Backup Konten ==========
     if [[ "$restore_success" == false && -f "$BACKUP_CONTENT" && -s "$BACKUP_CONTENT" ]]; then
-        echo -e "    ${CYAN}Mengembalikan isi file static...${NC}"
+        echo -e "    ${CYAN}Restoring static file content...${NC}"
         if cat "$BACKUP_CONTENT" > "$RESOLV_CONF" 2>/dev/null; then
             restore_success=true
         fi
@@ -601,16 +608,16 @@ restore_dns() {
     
     # ========== PRIORITAS 3: Smart Restore Fallback ==========
     if [[ "$restore_success" == false ]]; then
-        log_warn "Backup tidak ditemukan, kosong, atau rusak."
-        log_info "Mencoba Smart Restore ke default system..."
+        log_warn "Backup not found, empty, or corrupted."
+        log_info "Attempting Smart Restore to system default..."
 
         if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
-            echo -e "    ${CYAN}Terdeteksi Systemd-resolved. Mengembalikan symlink default...${NC}"
+            echo -e "    ${CYAN}Systemd-resolved detected. Restoring default symlink...${NC}"
             if ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF" 2>/dev/null; then
                 restore_success=true
             fi
         elif [[ -f "/run/systemd/resolve/resolv.conf" ]]; then
-            echo -e "    ${CYAN}Terdeteksi Systemd upstream. Mengembalikan symlink...${NC}"
+            echo -e "    ${CYAN}Systemd upstream detected. Restoring symlink...${NC}"
             if ln -sf "/run/systemd/resolve/resolv.conf" "$RESOLV_CONF" 2>/dev/null; then
                 restore_success=true
             fi
@@ -619,10 +626,10 @@ restore_dns() {
     
     # ========== Cek Total Gagal ==========
     if [[ "$restore_success" == false ]]; then
-        log_error "Restore DNS GAGAL!"
-        log_error "Tidak ada backup valid dan tidak ditemukan systemd-resolved."
-        log_info "Solusi manual: sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf"
-        read -rp "Tekan Enter..." 
+        log_error "Restore DNS FAILED!"
+        log_error "No valid backup and systemd-resolved not found."
+        log_info "Manual solution: sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf"
+        read -rp "Press Enter..." 
         return 1
     fi
     
@@ -631,22 +638,22 @@ restore_dns() {
     reload_network_manager
     
     # Verifikasi DNS berfungsi
-    log_step "Verifikasi koneksi DNS..."
+    log_step "Verifying DNS connection..."
     sleep 1  # Tunggu service settle
     
     if ping -c 1 -W 2 google.com &>/dev/null; then
-        log_ok "DNS berfungsi dengan baik!"
+        log_ok "DNS is working properly!"
     else
-        log_warn "DNS mungkin belum aktif. Coba tunggu beberapa detik atau restart browser."
+        log_warn "DNS might not be active yet. Try waiting a few seconds or restart browser."
     fi
     
     send_notification "DNS Restored" "System configuration has been restored."
-    log_ok "Restore selesai. Sistem kembali seperti semula."
-    read -rp "Tekan Enter untuk kembali..."
+    log_ok "Restore complete. System returned to original state."
+    read -rp "Press Enter to return..."
 }
 
 test_latency() {
-    log_step "Benchmark DNS (Ping Test)..."
+    log_step "DNS Benchmark (Ping Test)..."
     echo "------------------------------------------------"
     printf "${BOLD}%-25s %-15s %-10s${NC}\n" "Provider" "IP" "Latency"
     echo "------------------------------------------------"
@@ -657,8 +664,8 @@ test_latency() {
     umask 077
     TMP_SORT=$(mktemp "${TMPDIR:-/tmp}/xdns_latency.XXXXXX") || {
         umask "$old_umask"
-        log_error "Gagal membuat file temporary!"
-        read -rp "Tekan Enter..."
+        log_error "Failed to create temp file!"
+        read -rp "Press Enter..."
         return 1
     }
     umask "$old_umask"
@@ -700,7 +707,7 @@ test_latency() {
     rm -f "$TMP_SORT"
     TMP_SORT=""
     echo "------------------------------------------------"
-    read -rp "Tekan Enter untuk kembali..."
+    read -rp "Press Enter to return..."
 }
 
 apply_dns() {
@@ -711,16 +718,16 @@ apply_dns() {
 
     # --- Pre-Flight Check ---
     # Step 1: Test network connectivity
-    log_step "Cek koneksi ke $primary..."
+    log_step "Checking connection to $primary..."
     if ! ping -c 1 -W $PREFLIGHT_TIMEOUT "$primary" &> /dev/null; then
-        log_error "Server DNS tidak dapat dijangkau!"
-        echo "    Batalkan perubahan demi keamanan."
+        log_error "DNS Server unreachable!"
+        echo "    Aborting changes for safety."
         sleep 2
         return $EXIT_NETWORK_ERROR
     fi
     
     # Step 2: Test DNS service (not just ping)
-    log_step "Verifikasi DNS service..."
+    log_step "Verifying DNS service..."
     local dns_test_ok=false
     
     if command -v dig &> /dev/null; then
@@ -736,19 +743,19 @@ apply_dns() {
     else
         # No dig or nslookup, assume OK if ping passed (legacy behavior)
         dns_test_ok=true
-        log_warn "dig/nslookup tidak tersedia, skip DNS service test."
+        log_warn "dig/nslookup not available, skipping DNS service test."
     fi
     
     if [[ "$dns_test_ok" == false ]]; then
-        log_error "DNS server tidak merespon query!"
-        echo "    Server bisa di-ping tapi DNS service mungkin down."
-        echo "    Batalkan perubahan demi keamanan."
+        log_error "DNS server not responding to query!"
+        echo "    Server is pingable but DNS service might be down."
+        echo "    Aborting changes for safety."
         sleep 2
         return $EXIT_NETWORK_ERROR
     fi
 
     # --- Execution ---
-    log_step "Menerapkan ${name}..."
+    log_step "Applying ${name}..."
     
     init_backup # Ensure we have the original backup ONCE
     unlock_file
@@ -759,7 +766,7 @@ apply_dns() {
     umask 077
     tmp_conf=$(mktemp "${TMPDIR:-/tmp}/resolv.conf.XXXXXX") || {
         umask "$old_umask"
-        log_error "Gagal membuat file temporary!"
+        log_error "Failed to create temp file!"
         sleep 2
         return 1
     }
@@ -777,7 +784,7 @@ apply_dns() {
 
     # Move with force to overwrite/break symlink safely
     if ! mv -f "$tmp_conf" "$RESOLV_CONF"; then
-        log_error "Gagal menulis ke $RESOLV_CONF!"
+        log_error "Failed to write to $RESOLV_CONF!"
         rm -f "$tmp_conf"
         sleep 2
         return 1
@@ -788,12 +795,12 @@ apply_dns() {
         restorecon "$RESOLV_CONF" 2>/dev/null || true
     fi
 
-    log_ok "DNS Aktif!"
+    log_ok "DNS Active!"
     flush_dns_cache
     reload_network_manager
     
     # ========== VERIFIKASI & AUTO-ROLLBACK ==========
-    log_step "Verifikasi koneksi internet..."
+    log_step "Verifying internet connection..."
     sleep 2  # Tunggu DNS propagate
     
     # Test DNS resolution dengan multiple methods (seperti browser)
@@ -820,13 +827,13 @@ apply_dns() {
     
     if [[ "$verify_ok" == false ]]; then
         echo ""
-        log_error "Internet tidak berfungsi setelah ganti DNS!"
-        echo -e "${YELLOW}[!] Auto-rollback dalam 5 detik...${NC}"
-        echo -e "    Tekan Ctrl+C untuk batalkan rollback."
+        log_error "Internet not working after DNS change!"
+        echo -e "${YELLOW}[!] Auto-rollback in 5 seconds...${NC}"
+        echo -e "    Press Ctrl+C to cancel rollback."
         sleep 5
         
         # Auto-restore
-        log_step "Mengembalikan DNS ke konfigurasi sebelumnya..."
+        log_step "Restoring DNS to previous configuration..."
         unlock_file
         
         if [[ -f "$BACKUP_LINK_TARGET" && -s "$BACKUP_LINK_TARGET" ]]; then
@@ -847,13 +854,13 @@ apply_dns() {
         flush_dns_cache
         reload_network_manager
         
-        log_ok "DNS dikembalikan ke konfigurasi sebelumnya."
+        log_ok "DNS restored to previous configuration."
         send_notification "DNS Rollback" "DNS change failed. Restored previous configuration."
-        read -rp "Tekan Enter..."
+        read -rp "Press Enter..."
         return $EXIT_NETWORK_ERROR
     fi
     
-    log_ok "Internet berfungsi dengan baik!"
+    log_ok "Internet is working properly!"
     send_notification "DNS Changed" "Provider: $name\nPrimary: $primary"
 
     # Handle locking
@@ -862,15 +869,15 @@ apply_dns() {
         persist_dns_networkmanager  # Prevent NM from overwriting
     else
         echo ""
-        echo -e "${CYAN}Kunci DNS ini (Immutable)?${NC}"
-        read -rp "Pilihan (y/n): " lock_choice
+        echo -e "${CYAN}Lock this DNS (Immutable)?${NC}"
+        read -rp "Choice (y/n): " lock_choice
         if [[ "$lock_choice" =~ ^[Yy]$ ]]; then
             lock_file
             persist_dns_networkmanager  # Prevent NM from overwriting
         fi
     fi
 
-    read -rp "Tekan Enter..."
+    read -rp "Press Enter..."
 }
 
 set_custom_dns() {
@@ -878,18 +885,18 @@ set_custom_dns() {
     
     log_step "Set Custom DNS"
     read -rp "Primary IP   : " c_prim
-    read -rp "Secondary IP (opsional): " c_sec
+    read -rp "Secondary IP (optional): " c_sec
     
     # Validate Primary IP (required)
     if ! validate_ipv4 "$c_prim"; then
-        log_error "Primary IP tidak valid. Gunakan format: x.x.x.x (0-255)"
+        log_error "Invalid Primary IP. Use format: x.x.x.x (0-255)"
         sleep 2
         return
     fi
     
     # Validate Secondary IP (optional, but must be valid if provided)
     if [[ -n "$c_sec" ]] && ! validate_ipv4 "$c_sec"; then
-        log_error "Secondary IP tidak valid. Gunakan format: x.x.x.x (0-255)"
+        log_error "Invalid Secondary IP. Use format: x.x.x.x (0-255)"
         sleep 2
         return
     fi
@@ -906,12 +913,12 @@ handle_cli_set() {
     local do_lock="${2:-false}"
     
     if [[ ! "$provider_num" =~ ^([1-9]|1[0-2])$ ]]; then
-        log_error "Provider number harus 1-12"
+        log_error "Provider number must be 1-12"
         exit $EXIT_ERROR
     fi
     
     if [[ -z "${DNS_NAMES[$provider_num]:-}" ]]; then
-        log_error "Provider $provider_num tidak ditemukan"
+        log_error "Provider $provider_num not found"
         exit $EXIT_ERROR
     fi
     
@@ -943,7 +950,7 @@ parse_arguments() {
             -s|--set)
                 shift
                 if [[ -z "${1:-}" ]]; then
-                    log_error "Option -s memerlukan nomor provider (1-12)"
+                    log_error "Option -s requires provider number (1-12)"
                     exit $EXIT_ERROR
                 fi
                 local provider_num="$1"
@@ -982,7 +989,7 @@ parse_arguments() {
                 ;;
             *)
                 log_error "Unknown option: $1"
-                echo "Gunakan 'xdns --help' untuk melihat opsi yang tersedia."
+                echo "Use 'xdns --help' to see available options."
                 exit $EXIT_ERROR
                 ;;
         esac
@@ -998,7 +1005,7 @@ interactive_menu() {
         show_header
         get_current_dns
 
-        echo -e "${BOLD}Pilih Provider:${NC}"
+        echo -e "${BOLD}Select Provider:${NC}"
         for i in $(echo "${!DNS_NAMES[@]}" | tr ' ' '\n' | sort -n); do
             echo -e "  ${BOLD}$i.${NC} ${DNS_NAMES[$i]}"
         done
@@ -1006,7 +1013,7 @@ interactive_menu() {
         echo -e "  ${BOLD}C.${NC} Custom DNS"
         echo -e "  ${BOLD}T.${NC} Speed Test"
         echo -e "  ${BOLD}R.${NC} Restore Original"
-        echo -e "  ${BOLD}Q.${NC} Keluar"
+        echo -e "  ${BOLD}Q.${NC} Exit"
         echo ""
         read -rp ">> " choice
 
