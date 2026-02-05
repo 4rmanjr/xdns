@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# xdns - Advanced Linux DNS Changer (v3.2.0 Production)
+# xdns - Advanced Linux DNS Changer (v3.4.0 Production)
 # Informative, Interactive, Secure, and Atomic.
 # ==============================================================================
 
@@ -19,11 +19,9 @@ readonly RESOLV_CONF="/etc/resolv.conf"
 readonly BACKUP_DIR="/var/backups/xdns"
 readonly BACKUP_CONTENT="$BACKUP_DIR/resolv.conf.orig"
 readonly BACKUP_LINK_TARGET="$BACKUP_DIR/resolv.conf.link_path"
-readonly VERSION="3.3.0"
+readonly VERSION="3.4.0"
 
 # --- Network & Timing Constants ---
-readonly PING_COUNT=2
-readonly PING_TIMEOUT=1
 readonly PREFLIGHT_TIMEOUT=2
 readonly LATENCY_FAST=30
 readonly LATENCY_MEDIUM=100
@@ -214,6 +212,18 @@ install_missing_deps() {
                     packages+=("shellcheck")
                 fi
                 ;;
+            dig)
+                case "$pkg_manager" in
+                    apt) packages+=("dnsutils") ;;
+                    dnf|yum) packages+=("bind-utils") ;;
+                    pacman) packages+=("bind") ;;
+                    zypper) packages+=("bind-utils") ;;
+                    apk) packages+=("bind-tools") ;;
+                    portage) packages+=("net-dns/bind-tools") ;;
+                    xbps) packages+=("bind-utils") ;;
+                    eopkg) packages+=("bind-utils") ;;
+                esac
+                ;;
             *) log_warn "Unknown package for command: $cmd";;
         esac
     done
@@ -246,7 +256,7 @@ install_missing_deps() {
 }
 
 check_dependencies() {
-    local required=("bc" "ping" "chattr" "lsattr" "readlink" "mktemp")
+    local required=("bc" "ping" "chattr" "lsattr" "readlink" "mktemp" "dig")
     local missing=()
     
     for cmd in "${required[@]}"; do
@@ -407,7 +417,18 @@ get_current_dns() {
             echo -e "    ${CYAN}(Symlink to: $target)${NC}"
         fi
         
-        grep "nameserver" "$RESOLV_CONF" 2>/dev/null | head -n 3 | awk '{print "    ➜ " $2}'
+        # Read nameservers and identify providers
+        while read -r line; do
+            local ip provider_name
+            ip=$(echo "$line" | awk '{print $2}')
+            provider_name=$(identify_provider "$ip")
+            
+            if [[ -n "$provider_name" ]]; then
+                echo -e "    ➜ ${GREEN}$ip${NC} ${CYAN}($provider_name)${NC}"
+            else
+                echo -e "    ➜ $ip ${YELLOW}(Custom)${NC}"
+            fi
+        done < <(grep "nameserver" "$RESOLV_CONF" 2>/dev/null | head -n 3)
         
         if lsattr "$RESOLV_CONF" 2>/dev/null | grep -q "i"; then
             echo -e "${RED}    (LOCKED / IMMUTABLE)${NC}"
@@ -417,6 +438,42 @@ get_current_dns() {
     fi
     echo ""
 }
+
+# Identify DNS provider from IP address
+identify_provider() {
+    local ip="$1"
+    
+    case "$ip" in
+        # Google
+        8.8.8.8|8.8.4.4) echo "Google" ;;
+        # Cloudflare
+        1.1.1.1|1.0.0.1) echo "Cloudflare" ;;
+        1.1.1.2|1.0.0.2) echo "Cloudflare Secure" ;;
+        1.1.1.3|1.0.0.3) echo "Cloudflare Family" ;;
+        # Quad9
+        9.9.9.9|149.112.112.112) echo "Quad9" ;;
+        # AdGuard
+        94.140.14.14|94.140.15.15) echo "AdGuard" ;;
+        # OpenDNS
+        208.67.222.222|208.67.220.220) echo "OpenDNS" ;;
+        # Verisign
+        64.6.64.6|64.6.65.6) echo "Verisign" ;;
+        # NextDNS
+        45.90.28.0|45.90.30.0) echo "NextDNS" ;;
+        # Control D
+        76.76.2.0|76.76.10.0) echo "Control D" ;;
+        # CleanBrowsing
+        185.228.168.9|185.228.169.9) echo "CleanBrowsing" ;;
+        # DNS.SB
+        185.222.222.222|45.11.45.11) echo "DNS.SB" ;;
+        # Local/Router
+        127.0.0.1|127.0.0.53) echo "Local Resolver" ;;
+        192.168.*|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.2*|172.30.*|172.31.*) 
+            echo "Local Network" ;;
+        *) echo "" ;;
+    esac
+}
+
 
 init_backup() {
     # ONLY backup if not already backed up (Golden Image)
@@ -653,10 +710,14 @@ restore_dns() {
 }
 
 test_latency() {
-    log_step "DNS Benchmark (Ping Test)..."
-    echo "------------------------------------------------"
-    printf "${BOLD}%-25s %-15s %-10s${NC}\n" "Provider" "IP" "Latency"
-    echo "------------------------------------------------"
+    log_step "DNS Benchmark (True DNS Query Test)..."
+    echo ""
+    
+    # Constants
+    local DNS_QUERY_COUNT=3
+    local DNS_TIMEOUT=2
+    local LATENCY_UNREACHABLE=9999
+    local TEST_DOMAIN="google.com"
 
     # Create secure temp file with restrictive permissions
     local old_umask
@@ -670,53 +731,83 @@ test_latency() {
     }
     umask "$old_umask"
     
+    # Progress variables
+    local total=${#DNS_IPS[@]}
+    local count=0
+    
     for i in "${!DNS_IPS[@]}"; do
-        local ip name avg_ping
+        local ip name query_time total_time avg_time
         ip=$(echo "${DNS_IPS[$i]}" | awk '{print $1}')
         name="${DNS_NAMES[$i]}"
         
-        # Ping check
-        avg_ping=$(LC_ALL=C ping -c $PING_COUNT -W $PING_TIMEOUT "$ip" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
-        [[ -z "$avg_ping" ]] && avg_ping="999"
+        ((count++))
+        echo -ne "\r${YELLOW}[*]${NC} Testing [$count/$total]: ${name}...                    "
         
-        echo "$avg_ping|$name|$ip" >> "$TMP_SORT"
+        # DNS Query Benchmark using dig (more accurate than ping)
+        total_time=0
+        local successful_queries=0
+        
+        for ((q=1; q<=DNS_QUERY_COUNT; q++)); do
+            # dig returns query time in msec
+            query_time=$(dig @"$ip" "$TEST_DOMAIN" +noall +stats +timeout=$DNS_TIMEOUT +tries=1 2>/dev/null | \
+                        grep "Query time:" | awk '{print $4}')
+            
+            if [[ -n "$query_time" && "$query_time" =~ ^[0-9]+$ ]]; then
+                total_time=$((total_time + query_time))
+                ((successful_queries++))
+            fi
+        done
+        
+        # Calculate average or mark as unreachable
+        if [[ $successful_queries -gt 0 ]]; then
+            avg_time=$((total_time / successful_queries))
+        else
+            avg_time=$LATENCY_UNREACHABLE
+        fi
+        
+        echo "$avg_time|$name|$ip" >> "$TMP_SORT"
     done
+    
+    # Clear progress line and show header
+    echo -ne "\r                                                              \r"
+    echo "------------------------------------------------"
+    printf "${BOLD}%-25s %-15s %-10s${NC}\n" "Provider" "IP" "Latency"
+    echo "------------------------------------------------"
 
-    sort -n -t '|' -k1 "$TMP_SORT" | while IFS='|' read -r time name ip; do
-        local time_display color bc_result
-        if [[ "$time" == "999" ]]; then
+    # Display sorted results using process substitution (fixes subshell issue)
+    while IFS='|' read -r time name ip; do
+        local time_display color
+        if [[ "$time" -ge $LATENCY_UNREACHABLE ]]; then
             time_display="${RED}Down${NC}"
         else
-            # Safe bc comparison with fallback
-            bc_result=$(echo "$time < $LATENCY_FAST" | bc -l 2>/dev/null) || bc_result="0"
-            if [[ "$bc_result" == "1" ]]; then 
+            if [[ "$time" -lt $LATENCY_FAST ]]; then 
                 color=$GREEN
-            else
-                bc_result=$(echo "$time < $LATENCY_MEDIUM" | bc -l 2>/dev/null) || bc_result="0"
-                if [[ "$bc_result" == "1" ]]; then 
-                    color=$YELLOW
-                else 
-                    color=$RED
-                fi
+            elif [[ "$time" -lt $LATENCY_MEDIUM ]]; then 
+                color=$YELLOW
+            else 
+                color=$RED
             fi
             time_display="${color}${time} ms${NC}"
         fi
         printf "%-25s %-15s %b\n" "$name" "$ip" "$time_display"
-    done
+    done < <(sort -n -t '|' -k1 "$TMP_SORT")
     
     rm -f "$TMP_SORT"
     TMP_SORT=""
     echo "------------------------------------------------"
+    echo -e "${CYAN}[i]${NC} Using DNS query to $TEST_DOMAIN (avg of $DNS_QUERY_COUNT queries)"
     read -rp "Press Enter to return..."
 }
 
-apply_dns() {
-    local primary="$1"
-    local secondary="${2:-}"
-    local name="$3"
-    local auto_lock="${4:-false}"
 
-    # --- Pre-Flight Check ---
+# ==============================================================================
+# DNS APPLICATION (Refactored for maintainability)
+# ==============================================================================
+
+# Pre-flight check: Test DNS server connectivity and service
+preflight_check_dns() {
+    local primary="$1"
+    
     # Step 1: Test network connectivity
     log_step "Checking connection to $primary..."
     if ! ping -c 1 -W $PREFLIGHT_TIMEOUT "$primary" &> /dev/null; then
@@ -731,17 +822,14 @@ apply_dns() {
     local dns_test_ok=false
     
     if command -v dig &> /dev/null; then
-        # Prefer dig (most accurate, tests actual DNS resolution)
         if dig @"$primary" google.com +short +timeout=2 +tries=1 &>/dev/null; then
             dns_test_ok=true
         fi
     elif command -v nslookup &> /dev/null; then
-        # Fallback to nslookup
         if timeout 3 nslookup google.com "$primary" &>/dev/null; then
             dns_test_ok=true
         fi
     else
-        # No dig or nslookup, assume OK if ping passed (legacy behavior)
         dns_test_ok=true
         log_warn "dig/nslookup not available, skipping DNS service test."
     fi
@@ -753,21 +841,22 @@ apply_dns() {
         sleep 2
         return $EXIT_NETWORK_ERROR
     fi
-
-    # --- Execution ---
-    log_step "Applying ${name}..."
     
-    init_backup # Ensure we have the original backup ONCE
-    unlock_file
+    return 0
+}
 
-    # Atomic Write Strategy: Write to secure temp, then move
+# Write resolv.conf atomically
+write_resolv_conf() {
+    local primary="$1"
+    local secondary="$2"
+    local name="$3"
+    
     local tmp_conf old_umask
     old_umask=$(umask)
     umask 077
     tmp_conf=$(mktemp "${TMPDIR:-/tmp}/resolv.conf.XXXXXX") || {
         umask "$old_umask"
         log_error "Failed to create temp file!"
-        sleep 2
         return 1
     }
     umask "$old_umask"
@@ -779,14 +868,11 @@ apply_dns() {
         [[ -n "$secondary" ]] && echo "nameserver $secondary"
     } > "$tmp_conf"
 
-    # Ensure file is world-readable
     chmod 644 "$tmp_conf"
 
-    # Move with force to overwrite/break symlink safely
     if ! mv -f "$tmp_conf" "$RESOLV_CONF"; then
         log_error "Failed to write to $RESOLV_CONF!"
         rm -f "$tmp_conf"
-        sleep 2
         return 1
     fi
 
@@ -794,16 +880,12 @@ apply_dns() {
     if command -v restorecon &> /dev/null; then
         restorecon "$RESOLV_CONF" 2>/dev/null || true
     fi
+    
+    return 0
+}
 
-    log_ok "DNS Active!"
-    flush_dns_cache
-    reload_network_manager
-    
-    # ========== VERIFICATION & AUTO-ROLLBACK ==========
-    log_step "Verifying internet connection..."
-    sleep 2  # Wait for DNS propagate
-    
-    # Test DNS resolution with multiple methods (like browser)
+# Verify internet connection after DNS change
+verify_dns_connection() {
     local verify_ok=false
     
     # Method 1: resolvectl (most accurate, same as browser)
@@ -825,37 +907,70 @@ apply_dns() {
         fi
     fi
     
-    if [[ "$verify_ok" == false ]]; then
+    [[ "$verify_ok" == true ]]
+}
+
+# Auto-rollback DNS to previous configuration
+auto_rollback_dns() {
+    log_step "Restoring DNS to previous configuration..."
+    unlock_file
+    
+    if [[ -f "$BACKUP_LINK_TARGET" && -s "$BACKUP_LINK_TARGET" ]]; then
+        local target
+        target=$(head -n1 "$BACKUP_LINK_TARGET" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$target" && ( -e "$target" || -L "$target" ) ]]; then
+            ln -sf "$target" "$RESOLV_CONF" 2>/dev/null
+        fi
+    elif [[ -f "$BACKUP_CONTENT" && -s "$BACKUP_CONTENT" ]]; then
+        cat "$BACKUP_CONTENT" > "$RESOLV_CONF" 2>/dev/null
+    else
+        # Emergency fallback
+        if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
+            ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF" 2>/dev/null
+        fi
+    fi
+    
+    flush_dns_cache
+    reload_network_manager
+    log_ok "DNS restored to previous configuration."
+    send_notification "DNS Rollback" "DNS change failed. Restored previous configuration."
+}
+
+# Main apply_dns function (now simplified)
+apply_dns() {
+    local primary="$1"
+    local secondary="${2:-}"
+    local name="$3"
+    local auto_lock="${4:-false}"
+
+    # Pre-flight check
+    preflight_check_dns "$primary" || return $?
+    
+    # Apply DNS
+    log_step "Applying ${name}..."
+    init_backup
+    unlock_file
+    
+    if ! write_resolv_conf "$primary" "$secondary" "$name"; then
+        sleep 2
+        return 1
+    fi
+
+    log_ok "DNS Active!"
+    flush_dns_cache
+    reload_network_manager
+    
+    # Verification & Auto-rollback
+    log_step "Verifying internet connection..."
+    sleep 2
+    
+    if ! verify_dns_connection; then
         echo ""
         log_error "Internet not working after DNS change!"
         echo -e "${YELLOW}[!] Auto-rollback in 5 seconds...${NC}"
         echo -e "    Press Ctrl+C to cancel rollback."
         sleep 5
-        
-        # Auto-restore
-        log_step "Restoring DNS to previous configuration..."
-        unlock_file
-        
-        if [[ -f "$BACKUP_LINK_TARGET" && -s "$BACKUP_LINK_TARGET" ]]; then
-            local target
-            target=$(head -n1 "$BACKUP_LINK_TARGET" 2>/dev/null | tr -d '[:space:]')
-            if [[ -n "$target" && ( -e "$target" || -L "$target" ) ]]; then
-                ln -sf "$target" "$RESOLV_CONF" 2>/dev/null
-            fi
-        elif [[ -f "$BACKUP_CONTENT" && -s "$BACKUP_CONTENT" ]]; then
-            cat "$BACKUP_CONTENT" > "$RESOLV_CONF" 2>/dev/null
-        else
-            # Emergency fallback
-            if [[ -f "/run/systemd/resolve/stub-resolv.conf" ]]; then
-                ln -sf "/run/systemd/resolve/stub-resolv.conf" "$RESOLV_CONF" 2>/dev/null
-            fi
-        fi
-        
-        flush_dns_cache
-        reload_network_manager
-        
-        log_ok "DNS restored to previous configuration."
-        send_notification "DNS Rollback" "DNS change failed. Restored previous configuration."
+        auto_rollback_dns
         read -rp "Press Enter..."
         return $EXIT_NETWORK_ERROR
     fi
@@ -866,14 +981,14 @@ apply_dns() {
     # Handle locking
     if [[ "$auto_lock" == "true" ]]; then
         lock_file
-        persist_dns_networkmanager  # Prevent NM from overwriting
+        persist_dns_networkmanager
     else
         echo ""
         echo -e "${CYAN}Lock this DNS (Immutable)?${NC}"
         read -rp "Choice (y/n): " lock_choice
         if [[ "$lock_choice" =~ ^[Yy]$ ]]; then
             lock_file
-            persist_dns_networkmanager  # Prevent NM from overwriting
+            persist_dns_networkmanager
         fi
     fi
 

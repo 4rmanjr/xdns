@@ -58,11 +58,11 @@ assert_equals() {
 }
 
 assert_true() {
-    local condition="$1"
-    local test_name="$2"
+    local test_name="$1"
+    shift
     
     ((TESTS_RUN++))
-    if eval "$condition"; then
+    if "$@"; then
         log_pass "$test_name"
         return 0
     else
@@ -72,11 +72,11 @@ assert_true() {
 }
 
 assert_false() {
-    local condition="$1"
-    local test_name="$2"
+    local test_name="$1"
+    shift
     
     ((TESTS_RUN++))
-    if ! eval "$condition"; then
+    if ! "$@"; then
         log_pass "$test_name"
         return 0
     else
@@ -96,6 +96,53 @@ assert_exit_code() {
         return 0
     else
         log_fail "$test_name (expected exit: $expected, got: $actual)"
+        return 1
+    fi
+}
+
+# Assert string contains pattern (safe, no eval)
+assert_contains() {
+    local haystack="$1"
+    local needle="$2"
+    local test_name="$3"
+    
+    ((TESTS_RUN++))
+    if [[ "$haystack" == *"$needle"* ]]; then
+        log_pass "$test_name"
+        return 0
+    else
+        log_fail "$test_name (string does not contain '$needle')"
+        return 1
+    fi
+}
+
+# Assert variable is not empty (safe, no eval)
+assert_not_empty() {
+    local value="$1"
+    local test_name="$2"
+    
+    ((TESTS_RUN++))
+    if [[ -n "$value" ]]; then
+        log_pass "$test_name"
+        return 0
+    else
+        log_fail "$test_name (value is empty)"
+        return 1
+    fi
+}
+
+# Assert numeric greater than (safe, no eval)
+assert_gt() {
+    local value="$1"
+    local threshold="$2"
+    local test_name="$3"
+    
+    ((TESTS_RUN++))
+    if [[ "$value" -gt "$threshold" ]]; then
+        log_pass "$test_name"
+        return 0
+    else
+        log_fail "$test_name ($value is not > $threshold)"
         return 1
     fi
 }
@@ -188,17 +235,17 @@ test_dns_providers() {
     output=$("$XDNS_SCRIPT" --list 2>&1)
     
     # Check all 7 providers appear in list
-    assert_true "[[ \"$output\" == *\"Google\"* ]]" "Provider 1 exists (Google)"
-    assert_true "[[ \"$output\" == *\"Cloudflare\"* ]]" "Provider 2 exists (Cloudflare)"
-    assert_true "[[ \"$output\" == *\"Quad9\"* ]]" "Provider 4 exists (Quad9)"
-    assert_true "[[ \"$output\" == *\"AdGuard\"* ]]" "Provider 5 exists (AdGuard)"
-    assert_true "[[ \"$output\" == *\"OpenDNS\"* ]]" "Provider 6 exists (OpenDNS)"
-    assert_true "[[ \"$output\" == *\"Verisign\"* ]]" "Provider 7 exists (Verisign)"
+    assert_contains "$output" "Google" "Provider 1 exists (Google)"
+    assert_contains "$output" "Cloudflare" "Provider 2 exists (Cloudflare)"
+    assert_contains "$output" "Quad9" "Provider 4 exists (Quad9)"
+    assert_contains "$output" "AdGuard" "Provider 5 exists (AdGuard)"
+    assert_contains "$output" "OpenDNS" "Provider 6 exists (OpenDNS)"
+    assert_contains "$output" "Verisign" "Provider 7 exists (Verisign)"
     
     # Check IPs appear in list
-    assert_true "[[ \"$output\" == *\"8.8.8.8\"* ]]" "Google DNS IP shown"
-    assert_true "[[ \"$output\" == *\"1.1.1.1\"* ]]" "Cloudflare DNS IP shown"
-    assert_true "[[ \"$output\" == *\"9.9.9.9\"* ]]" "Quad9 DNS IP shown"
+    assert_contains "$output" "8.8.8.8" "Google DNS IP shown"
+    assert_contains "$output" "1.1.1.1" "Cloudflare DNS IP shown"
+    assert_contains "$output" "9.9.9.9" "Quad9 DNS IP shown"
 }
 
 # ==============================================================================
@@ -211,20 +258,18 @@ test_constants() {
     echo "Testing: Constants Definition"
     echo "========================================"
     
-    assert_true "[[ -n \"$VERSION\" ]]" "VERSION is defined"
-    assert_true "[[ \"$VERSION\" == \"3.3.0\" ]]" "VERSION is 3.3.0"
+    assert_not_empty "$VERSION" "VERSION is defined"
+    assert_equals "3.4.0" "$VERSION" "VERSION is 3.4.0"
     
-    assert_true "[[ -n \"$RESOLV_CONF\" ]]" "RESOLV_CONF is defined"
+    assert_not_empty "$RESOLV_CONF" "RESOLV_CONF is defined"
     assert_equals "/etc/resolv.conf" "$RESOLV_CONF" "RESOLV_CONF path correct"
     
-    assert_true "[[ -n \"$BACKUP_DIR\" ]]" "BACKUP_DIR is defined"
+    assert_not_empty "$BACKUP_DIR" "BACKUP_DIR is defined"
     assert_equals "/var/backups/xdns" "$BACKUP_DIR" "BACKUP_DIR path correct"
     
     # Network constants
-    assert_true "[[ \"$PING_COUNT\" -gt 0 ]]" "PING_COUNT is positive"
-    assert_true "[[ \"$PING_TIMEOUT\" -gt 0 ]]" "PING_TIMEOUT is positive"
-    assert_true "[[ \"$LATENCY_FAST\" -gt 0 ]]" "LATENCY_FAST is positive"
-    assert_true "[[ \"$LATENCY_MEDIUM\" -gt \"$LATENCY_FAST\" ]]" "LATENCY_MEDIUM > LATENCY_FAST"
+    assert_gt "$LATENCY_FAST" 0 "LATENCY_FAST is positive"
+    assert_gt "$LATENCY_MEDIUM" "$LATENCY_FAST" "LATENCY_MEDIUM > LATENCY_FAST"
 }
 
 # ==============================================================================
@@ -258,19 +303,19 @@ test_cli_help() {
     local output
     output=$("$XDNS_SCRIPT" --help 2>&1)
     assert_exit_code 0 $? "--help exits with 0"
-    assert_true "[[ \"$output\" == *\"USAGE\"* ]]" "--help contains USAGE"
-    assert_true "[[ \"$output\" == *\"OPTIONS\"* ]]" "--help contains OPTIONS"
+    assert_contains "$output" "USAGE" "--help contains USAGE"
+    assert_contains "$output" "OPTIONS" "--help contains OPTIONS"
     
     # Version should work without root
     output=$("$XDNS_SCRIPT" --version 2>&1)
     assert_exit_code 0 $? "--version exits with 0"
-    assert_true "[[ \"$output\" == *\"3.3.0\"* ]]" "--version shows 3.3.0"
+    assert_contains "$output" "3.4.0" "--version shows 3.4.0"
     
     # List should work without root
     output=$("$XDNS_SCRIPT" --list 2>&1)
     assert_exit_code 0 $? "--list exits with 0"
-    assert_true "[[ \"$output\" == *\"Google\"* ]]" "--list shows Google"
-    assert_true "[[ \"$output\" == *\"Cloudflare\"* ]]" "--list shows Cloudflare"
+    assert_contains "$output" "Google" "--list shows Google"
+    assert_contains "$output" "Cloudflare" "--list shows Cloudflare"
 }
 
 # ==============================================================================
@@ -383,6 +428,92 @@ test_new_distros() {
         log_fail "ConnMan support"
     fi
     ((TESTS_RUN++))
+}
+
+# ==============================================================================
+# TEST: Speed Test / DNS Benchmark (v3.3.0)
+# ==============================================================================
+
+test_speed_test() {
+    echo ""
+    echo "========================================"
+    echo "Testing: Speed Test / DNS Benchmark"
+    echo "========================================"
+    
+    # Check dig is in required dependencies
+    if grep -q '"dig"' "$XDNS_SCRIPT"; then
+        log_pass "dig is in required dependencies"
+    else
+        log_fail "dig is in required dependencies"
+    fi
+    ((TESTS_RUN++))
+    
+    # Check dig package mapping exists for common distros
+    if grep -q "dnsutils" "$XDNS_SCRIPT"; then
+        log_pass "dig package mapped for Debian (dnsutils)"
+    else
+        log_fail "dig package mapped for Debian (dnsutils)"
+    fi
+    ((TESTS_RUN++))
+    
+    if grep -q "bind-utils" "$XDNS_SCRIPT"; then
+        log_pass "dig package mapped for Fedora/RHEL (bind-utils)"
+    else
+        log_fail "dig package mapped for Fedora/RHEL (bind-utils)"
+    fi
+    ((TESTS_RUN++))
+    
+    # Check test_latency uses dig for DNS query
+    if grep -q 'dig @' "$XDNS_SCRIPT"; then
+        log_pass "test_latency uses dig for DNS query"
+    else
+        log_fail "test_latency not using dig"
+    fi
+    ((TESTS_RUN++))
+    
+    # Check progress indicator exists
+    if grep -q 'Testing \[' "$XDNS_SCRIPT"; then
+        log_pass "Speed test has progress indicator"
+    else
+        log_fail "Speed test missing progress indicator"
+    fi
+    ((TESTS_RUN++))
+}
+
+# ==============================================================================
+# TEST: identify_provider Function
+# ==============================================================================
+
+test_identify_provider() {
+    echo ""
+    echo "========================================"
+    echo "Testing: identify_provider()"
+    echo "========================================"
+    
+    # Test known providers
+    assert_equals "Google" "$(identify_provider '8.8.8.8')" "Google DNS primary"
+    assert_equals "Google" "$(identify_provider '8.8.4.4')" "Google DNS secondary"
+    
+    assert_equals "Cloudflare" "$(identify_provider '1.1.1.1')" "Cloudflare primary"
+    assert_equals "Cloudflare" "$(identify_provider '1.0.0.1')" "Cloudflare secondary"
+    
+    assert_equals "Cloudflare Secure" "$(identify_provider '1.1.1.2')" "Cloudflare Secure"
+    assert_equals "Cloudflare Family" "$(identify_provider '1.1.1.3')" "Cloudflare Family"
+    
+    assert_equals "Quad9" "$(identify_provider '9.9.9.9')" "Quad9 primary"
+    assert_equals "AdGuard" "$(identify_provider '94.140.14.14')" "AdGuard primary"
+    assert_equals "OpenDNS" "$(identify_provider '208.67.222.222')" "OpenDNS primary"
+    
+    # Test local resolvers
+    assert_equals "Local Resolver" "$(identify_provider '127.0.0.1')" "Localhost"
+    assert_equals "Local Resolver" "$(identify_provider '127.0.0.53')" "systemd-resolved stub"
+    
+    # Test local network ranges
+    assert_equals "Local Network" "$(identify_provider '192.168.1.1')" "Private IP 192.168.x.x"
+    assert_equals "Local Network" "$(identify_provider '10.0.0.1')" "Private IP 10.x.x.x"
+    
+    # Test unknown/custom DNS
+    assert_equals "" "$(identify_provider '203.0.113.1')" "Unknown DNS returns empty"
 }
 
 # ==============================================================================
@@ -528,6 +659,12 @@ main() {
         exit 1
     fi
     
+    # Cleanup mocks on exit
+    cleanup_mocks() {
+        unset -f command pacman apt-get dnf read 2>/dev/null || true
+    }
+    trap cleanup_mocks EXIT
+    
     # Source functions
     echo ""
     echo "Loading functions from xdns..."
@@ -543,6 +680,8 @@ main() {
     test_dns_providers
     test_cli_help
     test_new_distros
+    test_speed_test
+    test_identify_provider
     test_install_logic
     
     # Summary
