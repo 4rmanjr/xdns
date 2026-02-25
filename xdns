@@ -26,6 +26,11 @@ readonly PREFLIGHT_TIMEOUT=2
 readonly LATENCY_FAST=30
 readonly LATENCY_MEDIUM=100
 
+# Installation paths
+readonly INSTALL_BIN="/usr/local/bin"
+readonly INSTALL_DESKTOP_DIR="/usr/local/share/applications"
+readonly SCRIPT_SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 # Runtime variables
 TMP_SORT=""  # Will be set securely via mktemp
 
@@ -709,6 +714,182 @@ restore_dns() {
     read -rp "Press Enter to return..."
 }
 
+install_xdns() {
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Installation requires root privileges."
+        echo "    Run: sudo xdns"
+        echo "    Then select 'I' from the menu."
+        read -rp "Press Enter to return..."
+        return
+    fi
+    
+    echo ""
+    echo -e "${BOLD}${CYAN}========================================${NC}"
+    echo -e "${BOLD}${CYAN}       xdns Installation Menu        ${NC}"
+    echo -e "${BOLD}${CYAN}========================================${NC}"
+    echo ""
+    
+    local install_ok=true
+    local script_dir="$SCRIPT_SOURCE"
+    [[ -L "$script_dir" ]] && script_dir=$(readlink -f "$script_dir")
+    script_dir=$(cd "$(dirname "$script_dir")" && pwd)
+    
+    local desktop_file="$INSTALL_DESKTOP_DIR/xdns.desktop"
+    
+    echo -e "${YELLOW}[*]${NC} Installation will perform:"
+    echo "    1. Symlink to $INSTALL_BIN/xdns (global command)"
+    echo "    2. Desktop shortcut in $INSTALL_DESKTOP_DIR"
+    echo ""
+    
+    if [[ -L "$INSTALL_BIN/xdns" ]]; then
+        local existing_target
+        existing_target=$(readlink "$INSTALL_BIN/xdns")
+        if [[ "$existing_target" == "$SCRIPT_SOURCE" || "$existing_target" == "$script_dir/xdns" ]]; then
+            echo -e "${GREEN}[✓]${NC} Symlink already exists and points to correct location."
+        else
+            echo -e "${YELLOW}[!]${NC} Symlink exists but points to different location: $existing_target"
+            read -rp "    Overwrite? (y/n): " overwrite
+            if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+                rm -f "$INSTALL_BIN/xdns"
+            else
+                install_ok=false
+            fi
+        fi
+    fi
+    
+    if [[ "$install_ok" == true && ! -L "$INSTALL_BIN/xdns" ]]; then
+        echo -e "${YELLOW}[*]${NC} Creating symlink..."
+        if ln -sf "$SCRIPT_SOURCE" "$INSTALL_BIN/xdns"; then
+            log_ok "Symlink created: $INSTALL_BIN/xdns"
+        else
+            log_error "Failed to create symlink!"
+            install_ok=false
+        fi
+    fi
+    
+    install_icon "$script_dir"
+    
+    echo -e "${YELLOW}[*]${NC} Creating desktop shortcut..."
+    mkdir -p "$(dirname "$desktop_file")"
+    tee "$desktop_file" > /dev/null << 'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=xdns - DNS Manager
+Comment=Advanced Linux DNS Changer
+Exec=xdns
+Icon=xdns
+Terminal=true
+Categories=Network;System;Settings;
+Keywords=DNS;Network;Internet;
+StartupNotify=true
+EOF
+    
+    if [[ -f "$desktop_file" ]]; then
+        chmod 644 "$desktop_file"
+        log_ok "Desktop shortcut created: $desktop_file"
+    else
+        log_error "Failed to create desktop shortcut!"
+        install_ok=false
+    fi
+    
+    if command -v update-desktop-database &> /dev/null; then
+        update-desktop-database "$(dirname "$desktop_file")" 2>/dev/null || true
+    fi
+    
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    if [[ "$install_ok" == true ]]; then
+        echo -e "${GREEN}     Installation Successful!          ${NC}"
+        echo -e "${GREEN}========================================${NC}"
+        echo ""
+        echo "You can now run xdns from anywhere:"
+        echo -e "  ${CYAN}sudo xdns${NC}       (terminal)"
+        echo ""
+        echo "Desktop shortcut: Search for 'xdns' in your app menu."
+    else
+        echo -e "${RED}Installation incomplete. Check errors above.${NC}"
+    fi
+    
+    read -rp "Press Enter to return..."
+}
+
+install_icon() {
+    local script_dir="$1"
+    local icon_source_svg="$script_dir/icons/xdns.svg"
+    local icon_source_png="$script_dir/icons/xdns.png"
+    
+    echo -e "${YELLOW}[*]${NC} Installing icon..."
+    
+    local icon_installed=false
+    
+    if command -v xdg-icon-resource &> /dev/null; then
+        if [[ -f "$icon_source_svg" ]]; then
+            local icon_dir="/usr/local/share/icons/hicolor/scalable/apps"
+            mkdir -p "$icon_dir"
+            cp -f "$icon_source_svg" "$icon_dir/xdns.svg"
+            xdg-icon-resource install --size scalable "$icon_dir/xdns.svg" 2>/dev/null || true
+            icon_installed=true
+        elif [[ -f "$icon_source_png" ]]; then
+            local icon_dir="/usr/local/share/icons/hicolor/64x64/apps"
+            mkdir -p "$icon_dir"
+            cp -f "$icon_source_png" "$icon_dir/xdns.png"
+            xdg-icon-resource install --size 64 "$icon_dir/xdns.png" 2>/dev/null || true
+            icon_installed=true
+        fi
+    fi
+    
+    if [[ "$icon_installed" != true ]]; then
+        local icon_dir="/usr/local/share/icons/hicolor/48x48/apps"
+        mkdir -p "$icon_dir"
+        
+        if [[ -f "$icon_source_png" ]]; then
+            cp -f "$icon_source_png" "$icon_dir/xdns.png" 2>/dev/null || \
+            convert_icon "$icon_source_svg" "$icon_dir/xdns.png" || \
+            create_fallback_icon "$icon_dir/xdns.png"
+        elif [[ -f "$icon_source_svg" ]]; then
+            if command -v rsvg-convert &> /dev/null; then
+                rsvg-convert -w 48 -h 48 "$icon_source_svg" > "$icon_dir/xdns.png" 2>/dev/null && icon_installed=true
+            elif command -v inkscape &> /dev/null; then
+                inkscape -w 48 -h 48 "$icon_source_svg" -o "$icon_dir/xdns.png" 2>/dev/null && icon_installed=true
+            else
+                create_fallback_icon "$icon_dir/xdns.png"
+            fi
+        else
+            create_fallback_icon "$icon_dir/xdns.png"
+        fi
+    fi
+    
+    if [[ -f "$icon_dir/xdns.png" ]] || [[ -f "$icon_dir/xdns.svg" ]]; then
+        touch -c /usr/local/share/icons/hicolor 2>/dev/null || true
+        gtk-update-icon-cache -f -t /usr/local/share/icons/hicolor 2>/dev/null || true
+        log_ok "Icon installed."
+    else
+        echo -e "${YELLOW}[!]${NC} Icon installation skipped (will use default)."
+    fi
+}
+
+convert_icon() {
+    local src="$1"
+    local dest="$2"
+    
+    if command -v convert &> /dev/null; then
+        convert -size 48x48 xc:'#4A90D9' "$dest" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
+create_fallback_icon() {
+    local dest="$1"
+    cat > "$dest" << 'ICONEOF'
+PLACEHOLDER_ICON
+ICONEOF
+    if [[ -f "$dest" ]]; then
+        rm -f "$dest"
+    fi
+    return 1
+}
+
 test_latency() {
     log_step "DNS Benchmark (True DNS Query Test)..."
     echo ""
@@ -1128,6 +1309,7 @@ interactive_menu() {
         echo -e "  ${BOLD}C.${NC} Custom DNS"
         echo -e "  ${BOLD}T.${NC} Speed Test"
         echo -e "  ${BOLD}R.${NC} Restore Original"
+        echo -e "  ${BOLD}I.${NC} Install (Symlink + Desktop)"
         echo -e "  ${BOLD}Q.${NC} Exit"
         echo ""
         read -rp ">> " choice
@@ -1146,6 +1328,7 @@ interactive_menu() {
             [cC]) set_custom_dns ;; 
             [tT]) test_latency ;; 
             [rR]) restore_dns ;; 
+            [iI]) install_xdns ;; 
             [qQ]) log_ok "Bye!"; exit $EXIT_SUCCESS ;; 
             *) log_error "Invalid."; sleep 1 ;; 
         esac
